@@ -1,9 +1,41 @@
 <!DOCTYPE html>
 <html>
 <head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="manifest" href="manifest.json">
   <script src="service-worker.js"></script>
   <title>MKR1010 BLE Listener</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 10px;
+      background-color: #f4f8ff;
+    }
+
+    h1, h3 {
+      font-size: 20px;
+      margin-top: 20px;
+    }
+
+    button {
+      font-size: 16px;
+      margin: 5px;
+    }
+
+    #bluetoothData {
+      border: 1px solid #ccc;
+      padding: 10px;
+      background: #eef;
+      white-space: pre-wrap;
+      max-height: 60vh;
+      overflow-y: auto;
+    }
+
+    .ble-line {
+      font-size: 12px;
+      padding: 2px 0;
+    }
+  </style>
 </head>
 <body>
   <h1>MKR1010 BLE Listener Panel</h1>
@@ -22,8 +54,7 @@
 
   <!-- 📡 Incoming Data Display -->
   <h3>📡 Incoming Bluetooth Data</h3>
-  <div id="bluetoothData" style="border:1px solid #ccc;padding:10px;background:#eef;white-space:pre-wrap;"></div>
-
+  <div id="bluetoothData"></div>
 
   <script>
     let bluetoothDevice, commandChar, responseChar, timeChar;
@@ -35,7 +66,6 @@
           .catch(err => console.error("❌ SW registration failed:", err));
       });
     }
-
 
     async function sendCommand() {
       const input = document.getElementById("commandInput").value;
@@ -56,7 +86,6 @@
       }
     }
 
-
     async function connectAndListen() {
       try {
         bluetoothDevice = await navigator.bluetooth.requestDevice({
@@ -70,12 +99,10 @@
         const server = await bluetoothDevice.gatt.connect();
         const service = await server.getPrimaryService('56616c76-6550-756d-7053-797300000000');
 
-        // ✅ Get all three characteristics
         commandChar  = await service.getCharacteristic('56414c56-0000-0000-0000-000000000000');
         responseChar = await service.getCharacteristic('4550554d-0000-0000-0000-000000000000');
         timeChar     = await service.getCharacteristic('50535953-0000-0000-0000-000000000000');
 
-        // ✅ Subscribe to notifications
         await responseChar.startNotifications();
         responseChar.addEventListener('characteristicvaluechanged', handleBluetoothData);
 
@@ -91,36 +118,30 @@
       }
     }
 
-// 📡 Handle incoming data from the MKR1010
+    function handleBluetoothData(event) {
+      const bytes = new Uint8Array(event.target.value.buffer);
+      const decoded = new TextDecoder().decode(bytes);
+      const timestamp = new Date().toLocaleTimeString();
 
-      function handleBluetoothData(event) {
-        const bytes = new Uint8Array(event.target.value.buffer);
-        const decoded = new TextDecoder().decode(bytes);
-        const timestamp = new Date().toLocaleTimeString();
+      console.log(`📡 [${timestamp}] Received:`, decoded);
 
-        console.log(`📡 [${timestamp}] Received:`, decoded);
+      const display = document.getElementById('bluetoothData');
+      const line = document.createElement('div');
+      line.className = 'ble-line';
+      line.textContent = `[${timestamp}] ${decoded}`;
 
-        const display = document.getElementById('bluetoothData');
-        const line = document.createElement('div');
-        line.textContent = `[${timestamp}] ${decoded}`;
+      display.insertBefore(line, display.firstChild);
 
-        // Prepend newest data
-        display.insertBefore(line, display.firstChild);
-        // display.appendChild(line);
-
-
-        // 🔻 Trim excess entries to 50 lines
-        while (display.childNodes.length > 50) {
-          display.removeChild(display.lastChild);
-        }
+      while (display.childNodes.length > 50) {
+        display.removeChild(display.lastChild);
       }
+    }
 
     function clearBluetoothDisplay() {
       const display = document.getElementById('bluetoothData');
-      display.innerHTML = ""; // Clears all data
+      display.innerHTML = "";
       console.log("🧹 Display cleared");
     }
-
   </script>
 </body>
 </html>
