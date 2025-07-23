@@ -122,6 +122,7 @@
       const bytes = new Uint8Array(event.target.value.buffer);
       const decoded = new TextDecoder().decode(bytes);
       const timestamp = new Date().toLocaleTimeString();
+      
       line.style.fontSize = "12px";
 
       console.log(`📡 [${timestamp}] Received:`, decoded);
