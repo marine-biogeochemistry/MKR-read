@@ -29,6 +29,28 @@
       resize: vertical;   /* 👉 Makes the box resizable by dragging */
     }
 
+    /* Tab styles */
+    .tab-container { margin-top: 20px; }
+    .tab-buttons { display: flex; border-bottom: 1px solid #ccc; }
+    .tab-button { 
+      background: #f1f1f1; 
+      border: none; 
+      padding: 10px 20px; 
+      cursor: pointer; 
+      border-radius: 5px 5px 0 0;
+      margin-right: 5px;
+    }
+    .tab-button.active { background: #fff; border-bottom: 2px solid #007bff; }
+    .tab-button:hover { background: #e9e9e9; }
+    .tab-content { 
+      display: none; 
+      padding: 20px; 
+      border: 1px solid #ccc; 
+      border-top: none; 
+      background: #fff;
+    }
+    .tab-content.active { display: block; }
+
   </style>
 </head>
   <script>
@@ -52,6 +74,8 @@
       const now = new Date();
       document.getElementById('startDate').value = formatLocalDate(now);
       document.getElementById('startTime').value = formatLocalTime(now);
+      document.getElementById('rtcDate').value = formatLocalDate(now);
+      document.getElementById('rtcTime').value = formatLocalTime(now);
     });
 
     if ('serviceWorker' in navigator) {
@@ -59,6 +83,42 @@
         .then(reg => console.log('Service worker registered:', reg.scope))
         .catch(err => console.error('Service worker registration failed:', err));
     }
+
+    // Tab switching functionality
+    function openTab(tabName) {
+      // Hide all tab contents
+      const tabContents = document.querySelectorAll('.tab-content');
+      tabContents.forEach(content => content.classList.remove('active'));
+      
+      // Remove active class from all tab buttons
+      const tabButtons = document.querySelectorAll('.tab-button');
+      tabButtons.forEach(button => button.classList.remove('active'));
+      
+      // Show the selected tab content
+      document.getElementById(tabName).classList.add('active');
+      
+      // Add active class to the clicked button
+      event.target.classList.add('active');
+      
+      // Initialize schedule tab date/time if opened
+      if (tabName === 'schedule') {
+        const now = new Date();
+        document.getElementById('startDate').value = formatLocalDate(now);
+        document.getElementById('startTime').value = formatLocalTime(now);
+      }
+      // Initialize manual control tab date/time if opened
+      if (tabName === 'manual-control') {
+        const now = new Date();
+        document.getElementById('rtcDate').value = formatLocalDate(now);
+        document.getElementById('rtcTime').value = formatLocalTime(now);
+      }
+    }
+
+    // Initialize first tab as active
+    document.addEventListener('DOMContentLoaded', function() {
+      // Set default active tab
+      document.querySelector('.tab-button').click();
+    });
   </script>
 </body>
 
@@ -66,44 +126,189 @@
 
   <h1>PICO W BLE Panel</h1>
 
-  <button onclick="connectAndListen()">🔍 Scan & Connect</button>
-  <button onclick="clearBluetoothDisplay()">🧹 Clear Display</button>
-  <button onclick="sendReset()">🔁 Reboot Device</button>
-   <!-- <button onclick="sendShutdown()">🛑 Hard Shutdown</button> -->
-  <p id="selectedDevice"></p>
-  <p id="connectionStatus" style="font-weight:bold;"></p>
-  
-  <h3>📡 System Data & Logs</h3>
-  <button onclick="readLog()">📥 Read Log File</button>
-  <button onclick="downloadLog()">💾 Download Log</button>
-  <button onclick="clearLog()">🗑️ Clear Log</button>
-  <div id="bluetoothData"></div>
+  <div class="tab-container">
+    <div class="tab-buttons">
+      <button class="tab-button" onclick="openTab('main-control')">Main Control</button>
+      <button class="tab-button" onclick="openTab('wifi-control')">WiFi Control</button>
+      <button class="tab-button" onclick="openTab('schedule')">Schedule</button>
+      <button class="tab-button" onclick="openTab('manual-control')">Manual Control</button>
+      <button class="tab-button" onclick="openTab('help')">Help</button>
+    </div>
 
-  <h3>🛠 Generate Sample Schedule</h3>
-  <label for="startDate">📅 Start Date:</label>
-  <input type="date" id="startDate">
-  <br>
-  <label for="startTime">⏰ Start Time:</label>
-  <input type="time" id="startTime">
-  <br>
-  <label for="sampleDelay">⏱ Delay between samples (minutes):</label>
-  <input type="number" id="sampleDelay" min="1" value="20">
-  <br>
-  <label for="startIndex">🔢 Start sample index (1-15):</label>
-  <input type="number" id="startIndex" min="1" max="15" value="1">
-  <br>
-  <label for="numSamples">🔢 Number of samples (max 15):</label>
-  <input type="number" id="numSamples" min="1" max="15" value="15">
-  <br>
-  <button onclick="generateSampleSchedule()">📅 Generate Schedule</button>
-  <!-- <button onclick="previewSchedule()">👁️ Preview Schedule</button> -->
+    <div id="main-control" class="tab-content">
+      <button onclick="connectAndListen()">🔍 Scan & Connect</button>
+      <button onclick="clearBluetoothDisplay()">🧹 Clear Display</button>
+       <!-- <button onclick="sendShutdown()">🛑 Hard Shutdown</button> -->
+      <p id="selectedDevice"></p>
+      <p id="connectionStatus" style="font-weight:bold;"></p>
+      
+      <h3>📡 System Data & Logs</h3>
+      <button onclick="readLog()">📥 Read Log File</button>
+      <button onclick="downloadLog()">💾 Download Log</button>
+      <button onclick="clearLog()">🗑️ Clear Log</button>
+    </div>
 
-  <h3>📅 Batch Schedule Generator</h3>
-  <p>Enter multiple event times to send in bulk:</p>
-  <textarea id="scheduleInput" rows="6" style="width:100%; font-family: monospace;" placeholder="e.g./202R at 2025-08-18 21:47:00"></textarea>
-  <br>
-  <button onclick="sendScheduleFile()">📤 Send Schedule File</button>
-  <button onclick="readSchedule()">📥 Read Schedule File</button>
+    <div id="wifi-control" class="tab-content">
+      <h3>📶 WiFi Control</h3>
+      <button onclick="wifiOn()">📶 Turn WiFi ON</button>
+      <button onclick="wifiOff()">📶 Turn WiFi OFF</button>
+      <button onclick="wifiStatus()">📊 WiFi Status</button>
+      <br><br>
+      <button onclick="listFiles()">📂 List Files</button>
+      <br><br>
+      <label for="downloadFilename">📥 Download File:</label>
+      <input type="text" id="downloadFilename" placeholder="Enter filename">
+      <button onclick="downloadFile()">💾 Download</button>
+      <br><br>
+      <label for="uploadFile">📤 Upload File:</label>
+      <input type="file" id="uploadFile">
+      <button onclick="uploadFile()">⬆️ Upload</button>
+      <br><br>
+      <label for="deleteFilename">🗑️ Delete File:</label>
+      <input type="text" id="deleteFilename" placeholder="Enter filename">
+      <button onclick="deleteFile()">🗑️ Delete</button>
+    </div>
+
+    <div id="schedule" class="tab-content">
+      <h3>🛠 Generate Sample Schedule</h3>
+      <label for="startDate">📅 Start Date:</label>
+      <input type="date" id="startDate">
+      <br>
+      <label for="startTime">⏰ Start Time:</label>
+      <input type="time" id="startTime">
+      <br>
+      <label for="sampleDelay">⏱ Delay between samples (minutes):</label>
+      <input type="number" id="sampleDelay" min="1" value="20">
+      <br>
+      <label for="startIndex">🔢 Start sample index (1-15):</label>
+      <input type="number" id="startIndex" min="1" max="15" value="1">
+      <br>
+      <label for="numSamples">🔢 Number of samples (max 15):</label>
+      <input type="number" id="numSamples" min="1" max="15" value="15">
+      <br>
+      <button onclick="generateSampleSchedule()">📅 Generate Schedule</button>
+      <!-- <button onclick="previewSchedule()">👁️ Preview Schedule</button> -->
+
+      <h3>📅 Batch Schedule Generator</h3>
+      <p>Enter multiple event times to send in bulk:</p>
+      <textarea id="scheduleInput" rows="6" style="width:100%; font-family: monospace;" placeholder="e.g./202R at 2025-08-18 21:47:00"></textarea>
+      <br>
+      <button onclick="sendScheduleFile()">📤 Send Schedule File</button>
+      <button onclick="readSchedule()">📥 Read Schedule File</button>
+    </div>
+
+    <div id="manual-control" class="tab-content">
+      <h3>🔧 Manual Control</h3>
+      <button onclick="sendReset()">🔁 Reboot Device</button>
+      
+      <h4>🔌 Relay Control</h4>
+      <button onclick="relayOn()">🔌 Turn Relay ON</button>
+      <button onclick="relayOff()">🔌 Turn Relay OFF</button>
+      <button onclick="relayStatus()">📊 Relay Status</button>
+      
+      <h4>🔧 Manual RS485 Command</h4>
+      <label for="customCmd">Custom Command:</label>
+      <input type="text" id="customCmd" placeholder="e.g., /2O03R or /1J1M2000S14A0M2000J0R" style="width: 300px;">
+      <button onclick="sendCustomCmd()">📤 Send Command</button>
+      
+      <h4>🕒 Set RTC Time</h4>
+      <label for="rtcDate">📅 Date:</label>
+      <input type="date" id="rtcDate">
+      <br>
+      <label for="rtcTime">⏰ Time:</label>
+      <input type="time" id="rtcTime">
+      <br>
+      <button onclick="setRTCTime()">🕒 Set RTC Time</button>
+    </div>
+
+    <div id="help" class="tab-content">
+      <h3>📚 Help & Documentation</h3>
+      <p>Welcome to the PICO W BLE Panel! This interface allows you to control and monitor your Raspberry Pi Pico-based autosampler system via Bluetooth Low Energy (BLE).</p>
+      
+      <h4>🔗 Main Control</h4>
+      <p>Use this tab to connect to your Pico device, read system logs, and manage data.</p>
+      <ul>
+        <li><strong>Scan & Connect:</strong> Scan for and connect to nearby Pico devices.</li>
+        <li><strong>Read Log File:</strong> Retrieve the current log from the device.</li>
+        <li><strong>Download Log:</strong> Save the collected log data to your computer.</li>
+        <li><strong>Clear Log:</strong> Erase the log on the device (irreversible).</li>
+      </ul>
+      
+      <h4>📶 WiFi Control</h4>
+      <p>Manage the device's WiFi connectivity and file operations.</p>
+      <ul>
+        <li><strong>Turn WiFi ON/OFF:</strong> Enable or disable WiFi on the device.</li>
+        <li><strong>WiFi Status:</strong> Check the current WiFi connection status.</li>
+        <li><strong>List Files:</strong> View files stored on the device.</li>
+        <li><strong>Download/Upload/Delete Files:</strong> Transfer files to/from the device.</li>
+      </ul>
+      
+      <h4>🛠 Schedule</h4>
+      <p>Create and send sampling schedules to the device.</p>
+      <ul>
+        <li><strong>Generate Sample Schedule:</strong> Create a schedule based on start time, delay, and sample count.</li>
+        <li><strong>Batch Schedule Generator:</strong> Manually enter multiple schedule entries.</li>
+        <li><strong>Send Schedule File:</strong> Upload the schedule to the device.</li>
+        <li><strong>Read Schedule:</strong> Retrieve the current schedule from the device.</li>
+      </ul>
+      
+      <h4>🔧 Manual Control</h4>
+      <p>Direct control over device functions.</p>
+      <ul>
+        <li><strong>Reboot Device:</strong> Restart the Pico device.</li>
+        <li><strong>Relay Control:</strong> Turn the power relay on/off and check status.</li>
+        <li><strong>Manual RS485 Command:</strong> Send custom commands to the autosampler hardware.</li>
+        <li><strong>Set RTC Time:</strong> Synchronize the device's real-time clock.</li>
+      </ul>
+
+      <h4>Example of Manual RS485 Custom Command</h4>
+      <p>Command: <code>/1J0S15A0M1000A7640M2000J1M2000S14A0M2000J0R</code></p>
+      <p>Breakdown:</p>
+      <ul>
+        <li><strong>/1</strong>: Select valve 1</li>
+        <li><strong>J0</strong>: Solenoid off</li>
+        <li><strong>S15</strong>: Set speed to 15</li>
+        <li><strong>A0</strong>: Dispense 0 mL</li>
+        <li><strong>M1000</strong>: Wait 1000 ms</li>
+        <li><strong>A7640</strong>: Dispense 6 mL (7640 units)</li>
+        <li><strong>M2000</strong>: Wait 2000 ms</li>
+        <li><strong>J1</strong>: Solenoid on</li>
+        <li><strong>M2000</strong>: Wait 2000 ms</li>
+        <li><strong>S14</strong>: Set speed to 14</li>
+        <li><strong>A0</strong>: Dispense 0 mL</li>
+        <li><strong>M2000</strong>: Wait 2000 ms</li>
+        <li><strong>J0</strong>: Solenoid off</li>
+        <li><strong>R</strong>: End command</li>
+      </ul>
+      <p>This sequence rinses the valve, dispenses sample, and rinses again.</p>
+      
+      <h4>Another Example: Pump Recovery</h4>
+      <p>Command: <code>/1ZWR</code></p>
+      <p>Use this command to reinitialize the pump after a power cycle.</p>
+      
+      <h4>Valve Control Commands</h4>
+      <p>Commands for controlling valve positions (using valve address /2). Positions correspond to:</p>
+      <ul>
+        <li><strong>Reset:</strong> <code>/2wR</code> - Reset the valve</li>
+        <li><strong>Position 1 (Waste):</strong> <code>/2O1R</code> - Move to waste position</li>
+        <li><strong>Positions 2-16 (Samples 1-15):</strong> <code>/2O{N}R</code> - Move to sample position N-1 (replace {N} with 2-16)</li>
+      </ul>
+      <p>Note: The valve address is /2. The 'O' command sets the position, 'w' resets, and 'R' ends the command.</p>
+      
+      <h4>📡 System Data & Logs</h4>
+      <p>The display area shows real-time data from the device, including status updates, log entries, and command responses.</p>
+      
+      <h4>⚠️ Important Notes</h4>
+      <ul>
+        <li>Ensure the relay is ON before sending commands that require power.</li>
+        <li>Commands are sent via BLE; ensure a stable connection.</li>
+        <li>Schedule times should be in the future.</li>
+        <li>Use Chrome or Edge browser for best BLE compatibility.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div id="bluetoothData" style="margin-top: 20px; padding: 10px; border: 1px solid #ccc; background-color: #f9f9f9; max-height: 400px; overflow-y: auto; font-family: monospace; white-space: pre-wrap;"></div>
 
   <script>
     // Global variables for BLE
@@ -229,6 +434,15 @@
         device.addEventListener('gattserverdisconnected', handleDisconnection);
         
         const server = await device.gatt.connect();
+        
+        // Request larger MTU for longer messages
+        try {
+          await server.requestMTU(247);
+          console.log('MTU set to 247');
+        } catch (e) {
+          console.log('MTU request failed, using default (23)');
+        }
+        
         const service = await server.getPrimaryService('6e400001-b5a3-f393-e0a9-e50e24dcca9e');
         
         // Get characteristics
@@ -267,23 +481,42 @@
           throw new Error('Bluetooth is not available. Make sure it\'s enabled.');
         }
         
-        // Try with the most permissive settings first
-        console.log('Scanning for any BLE device...');
+        // First try to connect to already paired Pico devices
+        console.log('Checking for already paired Pico devices...');
         try {
-          device = await navigator.bluetooth.requestDevice({
-            acceptAllDevices: true,
-            optionalServices: ['6e400001-b5a3-f393-e0a9-e50e24dcca9e', 'generic_access'],
-            optionalName: 'Pico Autosampler'
-          });
-          console.log('Found BLE device:', device.name || 'Unnamed Device');
-        } catch (error) {
-          console.error('BLE scan error:', error);
-          if (error.name === 'NotFoundError') {
-            throw new Error('No BLE devices found. Make sure your Pico is powered on and in pairing mode.');
-          } else if (error.name === 'SecurityError') {
-            throw new Error('Bluetooth permission denied. Please allow access to Bluetooth devices.');
+          const devices = await navigator.bluetooth.getDevices();
+          const picoDevices = devices.filter(d => 
+            d.name && d.name.startsWith('Pico')
+          );
+          
+          if (picoDevices.length > 0) {
+            // Use the first available Pico device
+            device = picoDevices[0];
+            console.log('Found paired Pico device:', device.name);
           } else {
-            throw new Error(`Bluetooth error: ${error.message}`);
+            throw new Error('No paired Pico devices found');
+          }
+        } catch (pairedError) {
+          console.log('No paired devices found, scanning for new Pico devices...');
+          // Fall back to device discovery with specific filtering
+          try {
+            device = await navigator.bluetooth.requestDevice({
+              filters: [
+                { namePrefix: 'Pico' },
+                { services: ['6e400001-b5a3-f393-e0a9-e50e24dcca9e'] }
+              ],
+              optionalServices: ['generic_access']
+            });
+            console.log('Found new Pico device:', device.name || 'Unnamed Device');
+          } catch (scanError) {
+            console.error('BLE scan error:', scanError);
+            if (scanError.name === 'NotFoundError') {
+              throw new Error('No Pico devices found. Make sure your Pico is powered on and advertising.');
+            } else if (scanError.name === 'SecurityError') {
+              throw new Error('Bluetooth permission denied. Please allow access to Bluetooth devices.');
+            } else {
+              throw new Error(`Bluetooth error: ${scanError.message}`);
+            }
           }
         }
         
@@ -321,20 +554,6 @@
           .catch(err => console.error("❌ SW registration failed:", err));
       });
     }
-    
-    // Auto-set today's date when page loads (using local timezone)
-    window.addEventListener('load', () => {
-      const today = new Date();
-      const year = today.getFullYear();
-      const month = String(today.getMonth() + 1).padStart(2, '0');
-      const day = String(today.getDate()).padStart(2, '0');
-      document.getElementById('startDate').value = `${year}-${month}-${day}`;
-      
-      // Set default time to current time
-      const hours = String(today.getHours()).padStart(2, '0');
-      const minutes = String(today.getMinutes()).padStart(2, '0');
-      document.getElementById('startTime').value = `${hours}:${minutes}`;
-    });
 
     async function processBleQueue() {
       if (isSending || bleQueue.length === 0) return;
@@ -391,6 +610,93 @@
         });
     }
 
+    function setRTCTime() {
+      if (!rxCharacteristic) {
+        alert('⚠️ BLE not connected yet.');
+        return;
+      }
+      
+      // Get selected date and time from input fields
+      const selectedDate = document.getElementById('rtcDate').value;
+      const selectedTime = document.getElementById('rtcTime').value;
+      
+      if (!selectedDate || !selectedTime) {
+        alert('Please select both date and time');
+        return;
+      }
+      
+      // Create Date object from selected values
+      const selectedDateTime = new Date(`${selectedDate}T${selectedTime}`);
+      
+      // Extract components
+      const year = selectedDateTime.getFullYear();
+      const month = String(selectedDateTime.getMonth() + 1).padStart(2, '0');
+      const day = String(selectedDateTime.getDate()).padStart(2, '0');
+      const hours = String(selectedDateTime.getHours()).padStart(2, '0');
+      const minutes = String(selectedDateTime.getMinutes()).padStart(2, '0');
+      const seconds = String(selectedDateTime.getSeconds()).padStart(2, '0');
+      
+      // Ultra-compact format: T:YYYYMMDDHHMMSS (16 chars total)
+      const timeString = `T:${year}${month}${day}${hours}${minutes}${seconds}`;
+      sendBLEMessage(timeString)
+        .then(() => {
+          console.log('📤 Sent:', timeString);
+          document.getElementById('connectionStatus').textContent = '🕒 RTC time set command sent';
+        })
+        .catch(err => {
+          console.error('❌ BLE write failed:', err);
+          alert('Failed to send set time command');
+        });
+    }
+
+    function relayOn() {
+      if (!rxCharacteristic) {
+        alert('⚠️ BLE not connected yet.');
+        return;
+      }
+      sendBLEMessage('RELAY:ON')
+        .then(() => {
+          console.log('📤 Sent: RELAY:ON');
+          document.getElementById('connectionStatus').textContent = '🔌 Relay ON command sent';
+        })
+        .catch(err => {
+          console.error('❌ BLE write failed:', err);
+          alert('Failed to send relay ON command');
+        });
+    }
+
+    function relayOff() {
+      if (!rxCharacteristic) {
+        alert('⚠️ BLE not connected yet.');
+        return;
+      }
+      sendBLEMessage('RELAY:OFF')
+        .then(() => {
+          console.log('📤 Sent: RELAY:OFF');
+          document.getElementById('connectionStatus').textContent = '🔌 Relay OFF command sent';
+        })
+        .catch(err => {
+          console.error('❌ BLE write failed:', err);
+          alert('Failed to send relay OFF command');
+        });
+    }
+
+    function relayStatus() {
+      if (!rxCharacteristic) {
+        alert('⚠️ BLE not connected yet.');
+        return;
+      }
+      sendBLEMessage('RELAY:STATUS')
+        .then(() => {
+          console.log('📤 Sent: RELAY:STATUS');
+          document.getElementById('connectionStatus').textContent = '📊 Relay status requested';
+        })
+        .catch(err => {
+          console.error('❌ BLE write failed:', err);
+          alert('Failed to request relay status');
+        });
+    }
+
     function sendShutdown() {
       if (!rxCharacteristic) {
         alert('⚠️ BLE not connected yet.');
@@ -407,6 +713,213 @@
         .catch(err => {
           console.error('❌ BLE write failed:', err);
           alert('Failed to send shutdown command');
+        });
+    }
+
+    function wifiOn() {
+      if (!rxCharacteristic) {
+        alert('⚠️ BLE not connected yet.');
+        return;
+      }
+      sendBLEMessage('wifi_on')
+        .then(() => {
+          console.log('📤 Sent: wifi_on');
+          document.getElementById('connectionStatus').textContent = '📶 WiFi ON command sent';
+        })
+        .catch(err => {
+          console.error('❌ BLE write failed:', err);
+          alert('Failed to send WiFi ON command');
+        });
+    }
+
+    function wifiOff() {
+      if (!rxCharacteristic) {
+        alert('⚠️ BLE not connected yet.');
+        return;
+      }
+      sendBLEMessage('wifi_off')
+        .then(() => {
+          console.log('📤 Sent: wifi_off');
+          document.getElementById('connectionStatus').textContent = '📶 WiFi OFF command sent';
+        })
+        .catch(err => {
+          console.error('❌ BLE write failed:', err);
+          alert('Failed to send WiFi OFF command');
+        });
+    }
+
+    function wifiStatus() {
+      if (!rxCharacteristic) {
+        alert('⚠️ BLE not connected yet.');
+        return;
+      }
+      sendBLEMessage('wifi_status')
+        .then(() => {
+          console.log('📤 Sent: wifi_status');
+          document.getElementById('connectionStatus').textContent = '📊 WiFi status requested';
+        })
+        .catch(err => {
+          console.error('❌ BLE write failed:', err);
+          alert('Failed to request WiFi status');
+        });
+    }
+
+    function listFiles() {
+      fetch('http://192.168.4.1:5001/api/list')
+        .then(response => response.json())
+        .then(data => {
+          const display = document.getElementById('bluetoothData');
+          const timestamp = new Date().toLocaleTimeString();
+          const line = document.createElement('div');
+          if (data.status === 'ok') {
+            let fileList = `📂 Files (${data.total_count} total):\n`;
+            data.files.forEach(file => {
+              fileList += `  - ${file.name} (${file.size} bytes, ${file.location})\n`;
+            });
+            line.textContent = `[${timestamp}] ${fileList.trim()}`;
+          } else {
+            line.textContent = `[${timestamp}] ❌ List files error: ${data.message}`;
+          }
+          display.insertBefore(line, display.firstChild);
+          while (display.childNodes.length > 50) {
+            display.removeChild(display.lastChild);
+          }
+        })
+        .catch(err => {
+          console.error('List files error:', err);
+          const display = document.getElementById('bluetoothData');
+          const timestamp = new Date().toLocaleTimeString();
+          const line = document.createElement('div');
+          line.textContent = `[${timestamp}] ❌ Failed to list files`;
+          display.insertBefore(line, display.firstChild);
+          while (display.childNodes.length > 50) {
+            display.removeChild(display.lastChild);
+          }
+        });
+    }
+
+    function downloadFile() {
+      const filename = document.getElementById('downloadFilename').value.trim();
+      if (!filename) {
+        alert('Please enter a filename to download');
+        return;
+      }
+      fetch('http://192.168.4.1:5001/api/get?name=' + encodeURIComponent(filename))
+        .then(response => {
+          if (!response.ok) {
+            throw new Error('Download failed');
+          }
+          return response.blob();
+        })
+        .then(blob => {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+          // Show success in display
+          const display = document.getElementById('bluetoothData');
+          const timestamp = new Date().toLocaleTimeString();
+          const line = document.createElement('div');
+          line.textContent = `[${timestamp}] ✅ Downloaded: ${filename}`;
+          display.insertBefore(line, display.firstChild);
+          while (display.childNodes.length > 50) {
+            display.removeChild(display.lastChild);
+          }
+        })
+        .catch(err => {
+          console.error('Download error:', err);
+          const display = document.getElementById('bluetoothData');
+          const timestamp = new Date().toLocaleTimeString();
+          const line = document.createElement('div');
+          line.textContent = `[${timestamp}] ❌ Download failed: ${filename}`;
+          display.insertBefore(line, display.firstChild);
+          while (display.childNodes.length > 50) {
+            display.removeChild(display.lastChild);
+          }
+        });
+    }
+
+    function uploadFile() {
+      const fileInput = document.getElementById('uploadFile');
+      const file = fileInput.files[0];
+      if (!file) {
+        alert('Please select a file to upload');
+        return;
+      }
+
+      fetch('http://192.168.4.1:5001/api/upload?name=' + encodeURIComponent(file.name), {
+        method: 'POST',
+        body: file
+      })
+        .then(response => response.json())
+        .then(data => {
+          const display = document.getElementById('bluetoothData');
+          const timestamp = new Date().toLocaleTimeString();
+          const line = document.createElement('div');
+          if (data.status === 'ok') {
+            line.textContent = `[${timestamp}] ✅ Uploaded: ${file.name} (${data.bytes} bytes)`;
+          } else {
+            line.textContent = `[${timestamp}] ❌ Upload failed: ${data.message}`;
+          }
+          display.insertBefore(line, display.firstChild);
+          while (display.childNodes.length > 50) {
+            display.removeChild(display.lastChild);
+          }
+        })
+        .catch(err => {
+          console.error('Upload error:', err);
+          const display = document.getElementById('bluetoothData');
+          const timestamp = new Date().toLocaleTimeString();
+          const line = document.createElement('div');
+          line.textContent = `[${timestamp}] ❌ Upload failed: ${file.name}`;
+          display.insertBefore(line, display.firstChild);
+          while (display.childNodes.length > 50) {
+            display.removeChild(display.lastChild);
+          }
+        });
+    }
+
+    function deleteFile() {
+      const filename = document.getElementById('deleteFilename').value.trim();
+      if (!filename) {
+        alert('Please enter a filename to delete');
+        return;
+      }
+      if (!confirm(`Are you sure you want to delete "${filename}"?`)) {
+        return;
+      }
+      fetch('http://192.168.4.1:5001/api/delete?name=' + encodeURIComponent(filename), {
+        method: 'DELETE'
+      })
+        .then(response => response.json())
+        .then(data => {
+          const display = document.getElementById('bluetoothData');
+          const timestamp = new Date().toLocaleTimeString();
+          const line = document.createElement('div');
+          if (data.status === 'ok') {
+            line.textContent = `[${timestamp}] ✅ Deleted: ${filename}`;
+          } else {
+            line.textContent = `[${timestamp}] ❌ Delete failed: ${data.message}`;
+          }
+          display.insertBefore(line, display.firstChild);
+          while (display.childNodes.length > 50) {
+            display.removeChild(display.lastChild);
+          }
+        })
+        .catch(err => {
+          console.error('Delete error:', err);
+          const display = document.getElementById('bluetoothData');
+          const timestamp = new Date().toLocaleTimeString();
+          const line = document.createElement('div');
+          line.textContent = `[${timestamp}] ❌ Delete failed: ${filename}`;
+          display.insertBefore(line, display.firstChild);
+          while (display.childNodes.length > 50) {
+            display.removeChild(display.lastChild);
+          }
         });
     }
 
@@ -588,6 +1101,63 @@
           });
       } else {
         alert("⚠️ BLE not connected yet.");
+      }
+    }
+
+    function readSequence() {
+      const message = "READ_SEQUENCE";
+      if (rxCharacteristic) {
+        rxCharacteristic.writeValue(new TextEncoder().encode(message))
+          .then(() => {
+            console.log("📤 Sent:", message);
+            document.getElementById("connectionStatus").textContent = "📄 Requested sequence from Pico W";
+          })
+          .catch(err => {
+            console.error("❌ BLE write failed:", err);
+            alert("Failed to request sequence data");
+          });
+      } else {
+        alert("⚠️ BLE not connected yet.");
+      }
+    }
+
+    function sendCustomCmd() {
+      const cmd = document.getElementById('customCmd').value.trim();
+      if (!cmd) {
+        alert('Please enter a command');
+        return;
+      }
+      if (!rxCharacteristic) {
+        alert('Not connected to device');
+        return;
+      }
+      
+      // Confirm relay is on
+      if (!confirm('Make sure the relay is ON before sending the command. The pump/valve system requires power. Continue?')) {
+        return;
+      }
+      
+      // Split long commands into parts if needed (BLE MTU limit)
+      const maxPartLength = 4; // Reduced to fit within default MTU of 23 bytes
+      if (cmd.length <= maxPartLength) {
+        sendBLEMessage('SEND_CMD:' + cmd);
+      } else {
+        // Send in parts
+        const parts = [];
+        for (let i = 0; i < cmd.length; i += maxPartLength) {
+          parts.push(cmd.substr(i, maxPartLength));
+        }
+        
+        // Send start marker
+        sendBLEMessage('SEND_CMD_START:' + parts.length);
+        
+        // Send each part
+        parts.forEach((part, index) => {
+          sendBLEMessage('SEND_CMD_PART' + (index + 1) + ':' + part);
+        });
+        
+        // Send execute marker
+        sendBLEMessage('SEND_CMD_EXEC');
       }
     }
 
