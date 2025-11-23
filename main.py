@@ -6,6 +6,8 @@ import _thread
 from ble_simple_peripheral import BLESimplePeripheral
 from comm_manager import CommManager
 from ina219 import INA219
+from wifi_toggle import PicoPiFileServer
+from _thread import allocate_lock
 
 # Power management settings
 MIN_BLE_VOLTAGE = 3.6  # Minimum voltage for stable BLE operation 
@@ -25,7 +27,7 @@ ina219 = INA219(i2c_bus=i2c, addr=0x43)
 relay_manual_control = False
 last_alert_time = 0
 last_ok_time = 0    
-# last_battery_log = 100  # Track last logged battery level (starts at 100%)
+
 
 # === Relay Setup ===
 relay = Pin(13, Pin.OUT) # off
@@ -34,6 +36,25 @@ relay = Pin(13, Pin.OUT) # off
 # Setup UART and RS485 direction control pin
 uart = UART(0, baudrate=9600, tx=Pin(0), rx=Pin(1))
 rs485_dir = Pin(2, Pin.OUT)  # DE/RE pin
+
+# === LED Setup ===
+# Turn on built-in LED to indicate device is running
+led = Pin("LED", Pin.OUT)
+led.on()
+
+# Wi‑Fi file server control
+wifi_server = None
+wifi_thread_running = False
+
+def _wifi_server_thread():
+    global wifi_server, wifi_thread_running
+    try:
+        if wifi_server:
+            wifi_server.run()
+    except Exception as e:
+        print(f"Wi‑Fi server thread error: {e}")
+    finally:
+        wifi_thread_running = False
 
 def send_rs485_command(command):
     print("Command Sent:", command)
@@ -62,97 +83,6 @@ def send_rs485_command(command):
         print("Parsed Response:", response.decode('utf-8'))
     except UnicodeError:
         print("Received non-UTF8 data")
-
-# Example command
-# send_rs485_command("/3O5R")
-
-# def read_pico_ups():
-#     global ble_connected
-#     try:
-#         # Check system voltage first
-#         vsys_voltage = read_vsys()
-#         if vsys_voltage < MIN_BLE_VOLTAGE and ble_connected:
-#             print(f"⚠️  Low system voltage: {vsys_voltage:.2f}V - BLE may be unstable")
-#             # Don't attempt BLE operations if voltage is too low
-#             if ble_connected:
-#                 ble.active(False)
-#                 ble_connected = False
-#         elif vsys_voltage >= MIN_BLE_VOLTAGE and not ble_connected:
-#             # Try to reinitialize BLE if voltage is back to safe level
-#             ble_connected = setup_ble()
-            
-#         bus_voltage = ina219.getBusVoltage_V()
-#         shunt_voltage = ina219.getShuntVoltage_mV()
-#         current_mA = ina219.getCurrent_mA()
-#         psu_voltage = bus_voltage + (shunt_voltage / 1000)
-
-#         # # Battery percentage based on 3.3V (empty) to 4.2V (full)
-#         # min_voltage = 3.3
-#         # max_voltage = 4.2
-#         # battery_percent = (bus_voltage - min_voltage) / (max_voltage - min_voltage) * 100
-#         # battery_percent = max(0, min(100, battery_percent))
-
-#         # Charging status
-#         if current_mA < -10:  # Negative current means charging
-#             charge_status = "Charging"
-#         elif current_mA > 10:
-#             charge_status = "Discharging"
-#         else:
-#             charge_status = "Idle"
-
-#         # print("PSU Voltage: {:6.3f} V".format(psu_voltage))
-#         # print("Bus Voltage: {:6.3f} V".format(bus_voltage))
-#         # print("Shunt Voltage: {:6.3f} mV".format(shunt_voltage))
-#         # print("Current:     {:6.3f} A".format(current_mA / 1000))
-#         # print("Battery:     {:6.1f}% ({})".format(battery_percent, charge_status))
-#         print("")
-
-#         # Optional warning
-#         if battery_percent < 20:
-#             print("⚠️  WARNING: Battery below 20% - {:.1f}% remaining".format(battery_percent))
-
-#         return battery_percent
-
-#     except OSError as e:
-#         print(f"Error reading from INA219: {e}")
-#         print("Please check I2C connections and the address (0x43).")
-#         return None
-
-
-
-def control_relay(battery_percent, threshold=20):
-    global relay_manual_control, last_alert_time, last_ok_time
-    
-    if relay_manual_control:
-        return  # Skip battery control if relay is being manually controlled
-    
-    current_time = time.ticks_ms()
-    
-    # Only send alert once per minute to avoid spamming
-    alert_interval = 60000  # 60 seconds
-    
-    if battery_percent < threshold:
-        relay.value(1)  # Turn relay OFF (active-low)
-        message = f"🔋 LOW BATTERY: {battery_percent:.1f}% - Relay FORCED OFF"
-        print(message)
-        
-        # Check if we need to send an alert
-        if time.ticks_diff(current_time, last_alert_time) > alert_interval:
-            sp.send("⚠️ " + message)
-            last_alert_time = current_time
-    else:
-        # Don't modify relay state, just log battery status
-        message = f"✅ Battery OK: {battery_percent:.1f}%"
-        print(message)
-        
-        # Send OK status less frequently (every 5 minutes)
-        ok_interval = 300000  # 5 minutes
-        if time.ticks_diff(current_time, last_ok_time) > ok_interval:
-            sp.send("✅ " + message)
-            last_ok_time = current_time
-
-
-from _thread import allocate_lock
 
 # --- File Transfer State ---
 receiving_file = False
@@ -212,6 +142,10 @@ partial_line = ""
 last_packet_time = 0
 ble_lock = _thread.allocate_lock()
 
+# Global variables for custom command accumulation
+custom_cmd_parts = []
+custom_cmd_total_parts = 0
+
 # Global variables for tracking schedule entry parts
 current_cmd = None
 current_date = None
@@ -220,6 +154,8 @@ current_time = None
 def on_ble_rx(data):
     global receiving_file, file_lines, startNow, schedule, partial_line, last_packet_time
     global current_cmd, current_date, current_time
+    global custom_cmd_parts, custom_cmd_total_parts
+    global wifi_server, wifi_thread_running
     
     last_packet_time = time.ticks_ms()  # Update last packet time
     
@@ -402,6 +338,75 @@ def on_ble_rx(data):
                     machine.reset()
                 return
                 
+            elif msg.strip().startswith('T:'):
+                # Set RTC time from compact format: T:YYYYMMDDHHMMSS
+                time_str = msg.strip()[2:]  # Remove 'T:' prefix
+                try:
+                    print(f"Received compact time string: '{time_str}'")  # Debug output
+                    
+                    if len(time_str) != 14:
+                        raise ValueError(f"Invalid compact time format: expected 14 digits, got {len(time_str)}")
+                    
+                    # Parse compact format: YYYYMMDDHHMMSS
+                    year = int(time_str[0:4])
+                    month = int(time_str[4:6])
+                    day = int(time_str[6:8])
+                    hour = int(time_str[8:10])
+                    minute = int(time_str[10:12])
+                    second = int(time_str[12:14])
+                    
+                    print(f"Parsed: {year}-{month:02d}-{day:02d} {hour:02d}:{minute:02d}:{second:02d}")
+                    
+                    # Set the RTC using the manager
+                    datetime_tuple = (year, month, day, 0, hour, minute, second)  # weekday=0 (Monday)
+                    manager.set_rtc_time(datetime_tuple)
+                    
+                    sp.send(f'🕒 RTC time set to: {year}-{month:02d}-{day:02d} {hour:02d}:{minute:02d}:{second:02d}')
+                    print(f"RTC time set to: {year}-{month:02d}-{day:02d} {hour:02d}:{minute:02d}:{second:02d}")
+                except ValueError as e:
+                    sp.send(f'❌ Failed to parse compact time: {e}')
+                    print(f"ValueError parsing compact time: {e}")
+                    print(f"Time string was: '{time_str}'")
+                except Exception as e:
+                    sp.send(f'❌ Failed to set RTC time: {e}')
+                    print(f"Error setting RTC time: {e}")
+                    print(f"Time string was: '{time_str}'")
+                return
+                
+            elif msg.strip().upper() == 'RELAY:ON':
+                try:
+                    relay.value(0)  # Turn relay ON (active-low)
+                    sp.send('🔌 Relay turned ON')
+                    print('Relay manually turned ON')
+                except Exception as e:
+                    sp.send(f'❌ Failed to turn relay ON: {e}')
+                    print(f'Error turning relay ON: {e}')
+                return
+                
+            elif msg.strip().upper() == 'RELAY:OFF':
+                try:
+                    relay.value(1)  # Turn relay OFF (active-low)
+                    sp.send('🔌 Relay turned OFF')
+                    print('Relay manually turned OFF')
+                except Exception as e:
+                    sp.send(f'❌ Failed to turn relay OFF: {e}')
+                    print(f'Error turning relay OFF: {e}')
+                return
+                
+            elif msg.strip().upper() == 'RELAY:STATUS':
+                try:
+                    current_state = relay.value()
+                    if current_state == 0:
+                        status = "ON"
+                    else:
+                        status = "OFF"
+                    sp.send(f'🔌 Relay Status: {status}')
+                    print(f'Relay status: {status}')
+                except Exception as e:
+                    sp.send(f'❌ Failed to get relay status: {e}')
+                    print(f'Error getting relay status: {e}')
+                return
+                
             # Check for schedule file start
             if msg == 'CMD:SCHEDULE_FILE':
                 receiving_file = True
@@ -524,6 +529,174 @@ def on_ble_rx(data):
                     sp.send("📭 No schedule entries found")
                 return
             
+            elif msg == "READ_SEQUENCE":
+                time.sleep(0.1)  # Small delay before sending response
+                # Load raw sequence for display
+                sequence_lines = []
+                try:
+                    with open("default_sequence.txt", "r") as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line or line.startswith('#'):
+                                continue
+                            sequence_lines.append(line)
+                except OSError:
+                    pass
+                if sequence_lines:
+                    sp.send("Processed lines ({:d} total):".format(len(sequence_lines)))
+                    descriptions = {
+                        "/2wR": "start positions",
+                        "WAIT 1": "",
+                        "/1ZWR": "",
+                        "WAIT 10": "",
+                        "/2O01R": "rinse sequence",
+                        "WAIT 4": "",
+                        "RINSE 2": "",
+                        "{COMMAND}": "replaced with COMMAND during loading",
+                        "WAIT 4": "",
+                        "PUMP_CYCLES 15": "pump cycles",
+                        "/2wR": "reset valves",
+                        "WAIT 4": ""
+                    }
+                    for i, line in enumerate(reversed(sequence_lines), 1):
+                        step = len(sequence_lines) - i + 1
+                        desc = descriptions.get(line, "")
+                        if desc:
+                            sp.send(f"{step}. {line} ({desc})")
+                        else:
+                            sp.send(f"{step}. {line}")
+                        time.sleep(0.05)  # Small delay between lines
+                else:
+                    sp.send("📭 No sequence loaded (using default)")
+                return
+            
+            elif msg.startswith("wifi_on"):
+                # Format: wifi_on [ssid] [password] [port]
+                try:
+                    
+                    parts = msg.split()
+                    ssid = parts[1] if len(parts) > 1 else "PICO-AP"
+                    password = parts[2] if len(parts) > 2 else "12345678"
+                    try:
+                        port = int(parts[3]) if len(parts) > 3 else 5001
+                    except:
+                        port = 5001
+
+                    if wifi_thread_running:
+                        sp.send('{"status":"ok","message":"wifi_already_running"}')
+                        sp.send('{"message":"Connect your PC to the Wi‑Fi network PICO-AP"}')
+                        return
+
+                    wifi_server = PicoPiFileServer(ssid=ssid, password=password, port=port)
+                    try:
+                        _thread.start_new_thread(_wifi_server_thread, ())
+                        wifi_thread_running = True
+                        # Give AP a brief moment to come up
+                        time.sleep(1)
+                        status = wifi_server.status() if hasattr(wifi_server, 'status') else {}
+                        ip = status.get('ip') if isinstance(status, dict) else None
+                        msg = '{"status":"ok","message":"wifi_started","ip":"' + (ip or '') + '","port":' + str(port) + '}'
+                        sp.send(msg)
+                        sp.send('{"message":"Connect your PC to the Wi‑Fi network PICO-AP"}')
+                    except Exception as e:
+                        print(f"Error starting Wi‑Fi server: {e}")
+                        sp.send('{"status":"error","message":"wifi_start_failed"}')
+                except Exception as e:
+                    print(f"wifi_on parse/start error: {e}")
+                    sp.send('{"status":"error","message":"wifi_on_error"}')
+                return
+
+            elif msg.startswith("wifi_off"):
+                try:
+                    if wifi_server:
+                        try:
+                            wifi_server.shutdown()
+                        except Exception as e:
+                            print(f"Wi‑Fi shutdown error: {e}")
+                        wifi_server = None
+                        wifi_thread_running = False
+                        sp.send('{"status":"ok","message":"wifi_stopped"}')
+                    else:
+                        sp.send('{"status":"ok","message":"wifi_not_running"}')
+                except Exception as e:
+                    print(f"wifi_off error: {e}")
+                    sp.send('{"status":"error","message":"wifi_off_error"}')
+                return
+
+            elif msg.startswith("wifi_status"):
+                try:
+                    running = bool(wifi_thread_running and wifi_server)
+                    status = wifi_server.status() if (wifi_server and hasattr(wifi_server, 'status')) else {}
+                    ssid = status.get('ssid', 'PICO-AP') if isinstance(status, dict) else 'PICO-AP'
+                    ip = status.get('ip', '') if isinstance(status, dict) else ''
+                    port = status.get('port', 5001) if isinstance(status, dict) else 5001
+                    ap_active = status.get('ap_active', False) if isinstance(status, dict) else False
+                    msg = ('{"status":"ok","running":' + ('true' if running else 'false') +
+                        ',"ssid":"' + ssid + '",' +
+                        '"ip":"' + (ip or '') + '",' +
+                        '"port":' + str(port) + ',' +
+                        '"ap_active":' + ('true' if ap_active else 'false') + '}')
+                    sp.send(msg)
+                except Exception as e:
+                    print(f"wifi_status error: {e}")
+                    sp.send('{"status":"error","message":"wifi_status_error"}')
+                return
+            elif msg.startswith("SEND_CMD_START:"):
+                parts_str = msg[15:].strip()
+                try:
+                    custom_cmd_total_parts = int(parts_str)
+                    custom_cmd_parts = []
+                    sp.send(f"📥 Ready to receive {custom_cmd_total_parts} command parts")
+                except ValueError:
+                    sp.send("❌ Invalid command start")
+                return
+                
+            elif msg.startswith("SEND_CMD_PART"):
+                if custom_cmd_total_parts == 0:
+                    sp.send("❌ No command start received")
+                    return
+                part_num_str = msg.split(":")[0][13:]  # Extract part number
+                part_data = msg.split(":", 1)[1] if ":" in msg else ""
+                try:
+                    part_num = int(part_num_str)
+                    custom_cmd_parts.append((part_num, part_data))
+                    sp.send(f"📥 Received part {part_num}/{custom_cmd_total_parts}")
+                    
+                    # Check if all parts received
+                    if len(custom_cmd_parts) == custom_cmd_total_parts:
+                        # Sort by part number and assemble
+                        custom_cmd_parts.sort(key=lambda x: x[0])
+                        full_cmd = "".join([part[1] for part in custom_cmd_parts])
+                        send_rs485_command(full_cmd)
+                        sp.send(f"✅ Sent assembled command: {full_cmd}")
+                        # Reset
+                        custom_cmd_parts = []
+                        custom_cmd_total_parts = 0
+                except (ValueError, IndexError):
+                    sp.send("❌ Invalid command part")
+                return
+                
+            elif msg == "SEND_CMD_EXEC":
+                # This is handled after all parts are received
+                return
+                
+            elif msg.startswith("SEND_CMD:"):
+                cmd = msg[9:].strip()
+                if cmd:
+                    send_rs485_command(cmd)
+                    sp.send(f"✅ Sent command: {cmd}")
+                else:
+                    sp.send("❌ Empty command")
+                return
+            # elif msg.startswith("SEND_CMD:"):
+            #     cmd = msg[9:].strip()
+            #     if cmd:
+            #         send_rs485_command(cmd)
+            #         sp.send(f"✅ Sent command: {cmd}")
+            #     else:
+            #         sp.send("❌ Empty command")
+            #     return
+
     except Exception as e:
         print("BLE RX Error:", e)
         sp.send(f"❌ Error: {str(e)}")
@@ -598,11 +771,6 @@ def ble_send(message):
             sp.send(str(message))
         except Exception:
             print(f"BLE send error: {e}")
-
-# # Initial battery check
-# battery_level = read_pico_ups()
-# if battery_level is not None:
-#     control_relay(battery_level)
 
 # === Load Schedule ===
 def parse_schedule_line(line):
@@ -733,37 +901,59 @@ def parse_schedule_line(line):
         return None
 
 def load_schedule(filename="schedule.txt"):
-    """Load and parse the schedule file"""
+    """Load and parse the schedule file, fallback to default_sequence.txt if not found or empty"""
     global schedule
     schedule = []
-    try:
-        with open(filename, "r") as file:
-            for line in file:
-                if len(schedule) >= MAX_SCHEDULE_ENTRIES:
-                    break
+    
+    def parse_file(file_path):
+        temp_schedule = []
+        try:
+            with open(file_path, "r") as file:
+                for line in file:
+                    if len(temp_schedule) >= MAX_SCHEDULE_ENTRIES:
+                        break
 
-                line = line.strip()
-                if " at " not in line:
-                    continue
+                    line = line.strip()
+                    if " at " not in line:
+                        continue
 
-                cmd, datetime_str = line.split(" at ", 1)
+                    cmd, datetime_str = line.split(" at ", 1)
 
-                try:
-                    y, m, d, h, min, s = map(int, datetime_str.split()[0].split('-') + datetime_str.split()[1].split(':'))
-                    entry = {
-                        "command": cmd,
-                        "startTime": (y, m, d, h, min, s)
-                    }
-                    schedule.append(entry)
-                except ValueError:
-                    continue
-
-        print(f"📥 Schedule Loaded. Entries: {len(schedule)}")
+                    try:
+                        y, m, d, h, min, s = map(int, datetime_str.split()[0].split('-') + datetime_str.split()[1].split(':'))
+                        entry = {
+                            "command": cmd,
+                            "startTime": (y, m, d, h, min, s)
+                        }
+                        temp_schedule.append(entry)
+                    except ValueError:
+                        continue
+            return temp_schedule
+        except OSError:
+            return None
+    
+    # Try primary file
+    schedule = parse_file(filename)
+    if schedule is not None and schedule:
+        print(f"📥 Schedule Loaded from {filename}. Entries: {len(schedule)}")
         return schedule
-
-    except OSError:
-        print("Failed to open schedule file.")
-        return []
+    elif schedule is None:
+        print(f"Failed to open {filename}, trying default_sequence.txt")
+    else:
+        print(f"{filename} is empty, trying default_sequence.txt")
+    
+    # Try default file
+    schedule = parse_file("default_sequence.txt")
+    if schedule is not None and schedule:
+        print(f"📥 Default Schedule Loaded from default_sequence.txt. Entries: {len(schedule)}")
+        return schedule
+    elif schedule is None:
+        print("Failed to open default_sequence.txt.")
+    else:
+        print("default_sequence.txt is empty.")
+    
+    # If both fail, return empty
+    return []
 
 
 def rebase_schedule_to_now():
@@ -810,59 +1000,6 @@ def rebase_schedule_to_now():
         ts = entry["startTime"]
         print(f"  Step {i + 1}: {ts[0]:04d}-{ts[1]:02d}-{ts[2]:02d} {ts[3]:02d}:{ts[4]:02d}:{ts[5]:02d}")
 
-
-# BATTERY_LOG_FILE = "battery_log.txt"  # Will be saved in current directory
-# BATTERY_SHUTDOWN_THRESHOLD = 20.0  # Shutdown at 20% battery
-# BATTERY_LOG_INTERVAL = 5 * 60 * 1000  # Log every 5 minutes (in milliseconds)
-# last_battery_log_time = 0
-
-import machine
-
-# def safe_shutdown(reason):
-#     """Safely shut down the Pico"""
-#     print(f"\n⚠️  CRITICAL: {reason}")
-#     print("🛑 Initiating safe shutdown...")
-    
-#     try:
-#         # Log the shutdown event
-#         with open(BATTERY_LOG_FILE, "a") as log_file:
-#             log_file.write(f"{manager.get_formatted_time()} | SYSTEM SHUTDOWN: {reason}\n")
-        
-#         # Turn off the relay if it's on
-#         relay.value(1)  # Assuming IN is the 'off' state
-        
-#         # Send final BLE message if possible
-#         if 'sp' in globals():
-#             try:
-#                 sp.send(f"🔋 CRITICAL: {reason}")
-#                 sp.send("🛑 System shutting down")
-#                 time.sleep(1)  # Give time for messages to send
-#             except:
-#                 pass
-        
-#         print("Safe shutdown complete. Goodbye!")
-        
-#         # Blink LED to indicate shutdown
-#         led = machine.Pin("LED", machine.Pin.OUT)
-#         for _ in range(5):
-#             led.on()
-#             time.sleep(0.2)
-#             led.off()
-#             time.sleep(0.2)
-        
-#         # Go into deep sleep (as close to shutdown as we can get)
-#         machine.deepsleep()
-        
-#     except Exception as e:
-#         print(f"Error during shutdown: {e}")
-#         # If all else fails, just reset
-#         machine.reset()
-
-# def check_battery_safety(battery_level):
-#     """Check if battery level is safe, shutdown if critical"""
-#     if battery_level is not None and battery_level <= BATTERY_SHUTDOWN_THRESHOLD:
-#         safe_shutdown(f"Battery critically low: {battery_level:.1f}% (below {BATTERY_SHUTDOWN_THRESHOLD}%)")
-
 def log_command(cmd, timestamp, start_end):
     try:
         # Map commands to sample positions (handles both 'O' and '0' in commands)
@@ -889,18 +1026,6 @@ def log_command(cmd, timestamp, start_end):
         
         # Get sample position or default to "N/A"
         sample = sample_map.get(cmd.strip(), "N/A")
-        
-        # # Read battery status
-        # battery_level = read_pico_ups()
-        # battery_status = f"{battery_level:.1f}%" if battery_level is not None else "N/A"
-        
-        # # Log battery status
-        # if battery_level is not None:
-        #     log_battery_status(battery_level)
-        
-        # # Check for battery level drop
-        # if battery_level is not None:
-        #     log_battery_drop(battery_level)
         
         with open("log_ME.txt", "a") as log_file:
             # If timestamp is already a string, use it directly
@@ -929,9 +1054,7 @@ def log_command(cmd, timestamp, start_end):
 def wait_for_start():
     global startNow, schedule, ble_connected
     last_ping = time.ticks_ms()
-    # last_battery_check = 0
     last_ble_check = time.ticks_ms()
-    # battery_update_interval = 5000  # 5 seconds
     ble_check_interval = 10000  # 10 seconds
     
     # Load schedule if it's empty
@@ -947,26 +1070,6 @@ def wait_for_start():
     while True:
         current_time = time.ticks_ms()
         
-        # # Check battery status every 5 seconds
-        # if time.ticks_diff(current_time, last_battery_check) > battery_update_interval:
-        #     battery_level = read_pico_ups()
-        #     if battery_level is not None:
-        #         control_relay(battery_level)  # Update relay state
-        #         battery_status = f"Battery: {battery_level:.1f}%"
-        #         if ble_connected:
-        #             try:
-        #                 sp.send(f"🔋 {battery_status}")
-        #             except:
-        #                 print("⚠️  BLE send failed, will retry...")
-        #                 ble_connected = False
-        #         # Log battery status
-        #         # log_battery_status(battery_level)
-        #     else:
-        #         battery_status = "Battery: --%"
-        #     last_battery_check = current_time
-        # else:
-        #     battery_status = ""  # Don't show battery status if not updated this cycle
-            
         # Periodically check BLE connection
         if time.ticks_diff(current_time, last_ble_check) > ble_check_interval:
             if not ble_connected and read_vsys() >= MIN_BLE_VOLTAGE:
@@ -993,7 +1096,6 @@ def wait_for_start():
         scheduled_tuple = ensure_tuple(schedule[0]["startTime"])
 
         print("-----------")
-        # print(f"Current Time: {format_time(now_tuple)} {battery_status}")
         print(f"Scheduled Start: {format_time(scheduled_tuple)}")
         print("BLE Ready - Send 'm' for manual start")
 
@@ -1054,7 +1156,6 @@ def wait_for_start():
             sp.send(f"Next: {format_time(scheduled_tuple)}")
 
         time.sleep(5)
-
 
 # Helper time functions
 def parse_time_str(s):
@@ -1165,21 +1266,11 @@ def read_and_validate_response(rs485):
 def wait_with_heartbeat(duration_ms, next_index):
     t = 0
     last_heartbeat = time.ticks_ms()
-    # last_battery_check = 0
-    # battery_update_interval = 30000  # Check battery every 30 seconds
-    # battery_level = None
 
     while t < duration_ms:
         time.sleep(0.1)
         t += 100
         current_time = time.ticks_ms()
-
-        # # Check if it's time for a battery update (every 30 seconds)
-        # if time.ticks_diff(current_time, last_battery_check) > battery_update_interval:
-        #     battery_level = read_pico_ups()
-        #     if battery_level is not None:
-        #         control_relay(battery_level)  # Update relay state based on battery
-        #     last_battery_check = current_time
 
         # Heartbeat every 5 seconds
         if time.ticks_diff(current_time, last_heartbeat) > 5000:
@@ -1188,21 +1279,37 @@ def wait_with_heartbeat(duration_ms, next_index):
             current_now = parse_time_str(manager.get_formatted_time())
             next_switch = ensure_tuple(schedule[next_index]["startTime"])
             remaining = get_safe_remaining_millis(current_now, next_switch)
-
-            # Send all heartbeat information
-            # sp.send("💓Heartbeat active")
-            # sp.send(f"🔋 Battery: {battery_level:.1f}%" if battery_level is not None else "🔋 Battery: --%")
             sp.send("⏰ Current: " + format_time(current_now))
             sp.send("⏭️ Next at: " + format_time(next_switch))
             
-            # Debug prints
-            # print(f"💓 BLE heartbeat - Battery: {battery_level:.1f}%")
+
             print(f"⏰ Current: {format_time(current_now)}")
             print(f"⏭️ Next: {format_time(next_switch)}")
 
+def load_sequence(filename="default_sequence.txt"):
+    """Load the execution sequence from file, return list of commands/actions"""
+    sequence = []
+    try:
+        with open(filename, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if line == '{COMMAND}':
+                    sequence.append('COMMAND')
+                else:
+                    sequence.append(line)
+        if sequence:
+            print(f"📄 Sequence loaded from {filename} with {len(sequence)} steps")
+            sp.send(f"📄 Sequence loaded: {len(sequence)} steps")
+        return sequence
+    except OSError:
+        print(f"❌ Failed to load sequence from {filename}")
+        sp.send(f"❌ Failed to load sequence from {filename}")
+        return []
+
 def execute_step(command):
     global relay_manual_control
-    # relay_manual_control = True  # Disable battery control of relay
     
     sp.send("🔀⚡Relay on")
     print("Testing Relay ON")
@@ -1215,56 +1322,65 @@ def execute_step(command):
     time.sleep(1)
     send_rs485_command("/1ZWR") # pump test
     time.sleep(10)
-
     # probably need a rinse section in here with "/201R and 2 cycles of the pump
     print( "Rinsing system")
     send_rs485_command("/2O01R")
     time.sleep(4)
-    for i in range(2):
-        print(f"💉 Rinse {i+1}/2")
-        sp.send(f"💉 Rinse {i+1}/2")
-        send_rs485_command("/1J0S14A0A7640J1M500S14A0M500J0R")
-        time.sleep(23)  # 23 secomds at least for each cycle. 
 
+    sequence = load_sequence("default_sequence.txt")
+    if not sequence:
+        # Default hard-coded sequence
+        sequence = [
+            "RINSE 2",
+            "COMMAND",
+            "PUMP 12"
+        ]
 
-    print(f"🚀 Executing command: {command}")
-    log_command(command, manager.get_formatted_time(), "Start")
-    send_rs485_command(command)
-    sp.send("🚀 Executing command: " + command)
-    sp.send("🛠️Valves set")
-    time.sleep(4)
+    for item in sequence:
+        if item.startswith('RINSE '):
+            n = int(item.split()[1])
+            for i in range(n):
+                print(f"💉 Rinse {i+1}/{n}")
+                sp.send(f"💉 Rinse {i+1}/{n}")
+                send_rs485_command("/1J0S15A0A7640M2000J1M2000S14A0M2000J0R")
+                time.sleep(30)
+        elif item == 'COMMAND':
+            print(f"🚀 Executing command: {command}")
+            log_command(command, manager.get_formatted_time(), "Start")
+            send_rs485_command(command)
+            sp.send("🚀 Executing command: " + command)
+            sp.send("🛠️Valves set")
+            time.sleep(4)
+        elif 'PUMP' in item:
+            parts = item.split()
+            requested_n = int(parts[-1])
+            n = min(requested_n, 15)  # Cap at maximum 15 cycles
+            if requested_n > 15:
+                warning_msg = f"⚠️ Pump cycles capped at 15 (requested {requested_n})"
+                print(warning_msg)
+                sp.send(warning_msg)
+            print(f"💉 Starting pump sequence ({n} repetitions)")
+            sp.send(f"💉 Starting pump sequence ({n}x)")
+            for i in range(n):
+                print(f"💉 Pumping cycle {i+1}/{n}")
+                sp.send(f"💉 Cycle {i+1}/{n}")
+                send_rs485_command("/1J0S15A0A7640M2000J1M2000S14A0M2000J0R")
+                time.sleep(30)
+            print("✅ Completed all pump cycles")
+            sp.send("✅ Pumping completed")
+            log_command(command, manager.get_formatted_time(), "End")
 
-    print("💉 Starting pump sequence (15 repetitions)")
-    sp.send("💉 Starting pump sequence (15x)")
-    
-    for i in range(15): # normanly 15
-        print(f"💉 Pumping cycle {i+1}/15")
-        sp.send(f"💉 Cycle {i+1}/15")
-        send_rs485_command("/1J0S14A0A7640J1M500S14A0M500J0R")
-        time.sleep(23)  # 23 secomds at least for each cycle. 
-
-    print("✅ Completed all pump cycles")
-    sp.send("✅ Pumping completed")
-
-    log_command(command, manager.get_formatted_time(), "End")
-    
     print("♻️ Resetting valves post-operation")
     sp.send("♻️Reset valves")
     send_rs485_command("/2wR")
-    time.sleep(4)
-    
-    # # Log battery status after sample collection
-    # battery_level = read_pico_ups()
-    # if battery_level is not None:
-    #     log_battery_status(battery_level, force_log=True)
-    
+    time.sleep(4) 
 
     print("Relay OFF")
     sp.send("🔀⚡Relay off")
     relay.value(1)  # Set relay to OFF state (active-low logic: 1 = OFF, 0 = ON)
-    time.sleep(1)  # Small delay before re-enabling battery control
-    # relay_manual_control = False  # Re-enable battery control
+    time.sleep(1) 
 
+# Load initial schedule
 schedule = load_schedule("schedule.txt")
 
 def main_loop():
@@ -1333,6 +1449,12 @@ def cleanup():
     if 'sp' in globals():
         sp.send("Script stopped by user")
     print("Cleanup complete. Safe to disconnect.")
+
+# Load and confirm sequence on startup
+sequence_test = load_sequence("default_sequence.txt")
+if not sequence_test:
+    print("Using default hard-coded sequence")
+    sp.send("Using default hard-coded sequence")
 
 try:
     scheduler()
