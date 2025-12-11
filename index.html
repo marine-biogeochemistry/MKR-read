@@ -62,11 +62,12 @@
       return `${year}-${month}-${day}`;
     }
 
-    // Format time as HH:MM in local timezone
+    // Format time as HH:MM:SS in local timezone
     function formatLocalTime(date) {
       const hours = String(date.getHours()).padStart(2, '0');
       const minutes = String(date.getMinutes()).padStart(2, '0');
-      return `${hours}:${minutes}`;
+      const seconds = String(date.getSeconds()).padStart(2, '0');
+      return `${hours}:${minutes}:${seconds}`;
     }
 
     // Initialize default date and time to current local time
@@ -175,7 +176,7 @@
       <input type="date" id="startDate">
       <br>
       <label for="startTime">⏰ Start Time:</label>
-      <input type="time" id="startTime">
+      <input type="time" id="startTime" step="1">
       <br>
       <label for="sampleDelay">⏱ Delay between samples (minutes):</label>
       <input type="number" id="sampleDelay" min="1" value="20">
@@ -200,13 +201,14 @@
     <div id="manual-control" class="tab-content">
       <h3>🔧 Manual Control</h3>
       <button onclick="sendReset()">🔁 Reboot Device</button>
+      <button onclick="emergencyStop()">🛑 Emergency Stop</button>
       
       <h4>🔌 Relay Control</h4>
       <button onclick="relayOn()">🔌 Turn Relay ON</button>
       <button onclick="relayOff()">🔌 Turn Relay OFF</button>
       <button onclick="relayStatus()">📊 Relay Status</button>
       
-      <h4>🔧 Manual RS485 Command</h4>
+      <h4>🔧 Manual RS232 Command</h4>
       <label for="customCmd">Custom Command:</label>
       <input type="text" id="customCmd" placeholder="e.g., /2O03R or /1J1M2000S14A0M2000J0R" style="width: 300px;">
       <button onclick="sendCustomCmd()">📤 Send Command</button>
@@ -216,9 +218,24 @@
       <input type="date" id="rtcDate">
       <br>
       <label for="rtcTime">⏰ Time:</label>
-      <input type="time" id="rtcTime">
+      <input type="time" id="rtcTime" step="1">
       <br>
       <button onclick="setRTCTime()">🕒 Set RTC Time</button>
+      <button onclick="syncRTCWithPC()">🔄 Sync with PC Time</button>
+      
+      <h4>⚙️ Pump Sequence Configuration</h4>
+      <button onclick="readSequenceConfig()">📥 Read Sequence File</button>
+      <br><br>
+      <div id="sequenceConfigPanel" style="display:none; border: 1px solid #ccc; padding: 10px; margin-top: 10px;">
+        <label for="rinseCount">🚿 Number of Rinses:</label>
+        <input type="number" id="rinseCount" min="0" max="10" value="2" style="width: 60px;">
+        <br><br>
+        <label for="pumpCycles">💉 Number of Pump Cycles:</label>
+        <input type="number" id="pumpCycles" min="1" max="15" value="12" style="width: 60px;">
+        <br><br>
+        <button onclick="updateSequenceConfig()">💾 Update Sequence File</button>
+        <button onclick="cancelSequenceEdit()">❌ Cancel</button>
+      </div>
     </div>
 
     <div id="help" class="tab-content">
@@ -256,12 +273,20 @@
       <p>Direct control over device functions.</p>
       <ul>
         <li><strong>Reboot Device:</strong> Restart the Pico device.</li>
+        <li><strong>Emergency Stop:</strong> Immediately halt all scheduled operations, stop the pump, and turn off the relay.</li>
         <li><strong>Relay Control:</strong> Turn the power relay on/off and check status.</li>
-        <li><strong>Manual RS485 Command:</strong> Send custom commands to the autosampler hardware.</li>
+        <li><strong>Manual RS232 Command:</strong> Send custom commands to the autosampler hardware.</li>
         <li><strong>Set RTC Time:</strong> Synchronize the device's real-time clock.</li>
+        <li><strong>Pump Sequence Configuration:</strong> Read and modify the default pump sequence settings stored in <code>default_sequence.txt</code>. You can adjust:
+          <ul>
+            <li><strong>Number of Rinses (0-10):</strong> How many times to rinse the valve before sampling.</li>
+            <li><strong>Number of Pump Cycles (1-15):</strong> How many times to repeat the pump cycle. Each pump cycle dispenses approximately 6 mL of sample.</li>
+          </ul>
+          Changes are saved to the device and will apply to the next scheduled sampling operation.
+        </li>
       </ul>
 
-      <h4>Example of Manual RS485 Custom Command</h4>
+      <h4>Example of Manual RS232 Custom Command</h4>
       <p>Command: <code>/1J0S15A0M1000A7640M2000J1M2000S14A0M2000J0R</code></p>
       <p>Breakdown:</p>
       <ul>
@@ -329,6 +354,7 @@
       currentTime: 'N/A',
       endTime: 'N/A',
       runtime: 'N/A',
+      remaining: 'N/A',
       lastUpdated: 0
     };
     let isReconnecting = false;
@@ -359,6 +385,7 @@
         `Current Time: ${lastStatus.currentTime}`,
         `🛑 Scheduled End Time: ${lastStatus.endTime}`,
         `🕒 Scheduled Runtime: ${lastStatus.runtime}`,
+        `📊 Remaining: ${lastStatus.remaining}`,
       ];
       
       // Add the status messages at the top
@@ -646,6 +673,71 @@
         .catch(err => {
           console.error('❌ BLE write failed:', err);
           alert('Failed to send set time command');
+        });
+    }
+
+    function syncRTCWithPC() {
+      if (!rxCharacteristic) {
+        alert('⚠️ BLE not connected yet.');
+        return;
+      }
+      
+      // Get current PC time
+      const now = new Date();
+      
+      // Extract components
+      const year = now.getFullYear();
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      const day = String(now.getDate()).padStart(2, '0');
+      const hours = String(now.getHours()).padStart(2, '0');
+      const minutes = String(now.getMinutes()).padStart(2, '0');
+      const seconds = String(now.getSeconds()).padStart(2, '0');
+      
+      // Ultra-compact format: T:YYYYMMDDHHMMSS (16 chars total)
+      const timeString = `T:${year}${month}${day}${hours}${minutes}${seconds}`;
+      sendBLEMessage(timeString)
+        .then(() => {
+          console.log('📤 Sent (PC sync):', timeString);
+          document.getElementById('connectionStatus').textContent = `🔄 RTC synced with PC time: ${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+        })
+        .catch(err => {
+          console.error('❌ BLE write failed:', err);
+          alert('Failed to sync RTC with PC time');
+        });
+    }
+
+    function emergencyStop() {
+      if (!rxCharacteristic) {
+        alert('⚠️ BLE not connected yet.');
+        return;
+      }
+      
+      if (!confirm('🛑 EMERGENCY STOP: This will halt all scheduled operations and turn off the relay. Continue?')) {
+        return;
+      }
+      
+      // Send emergency stop flag to halt scheduler
+      sendBLEMessage('EMERGENCY_STOP')
+        .then(() => {
+          console.log('📤 Sent emergency stop signal');
+          document.getElementById('connectionStatus').textContent = '🛑 Emergency stop signal sent';
+          
+          // Send pump terminate command (T) - stops pump immediately
+          return sendBLEMessage('SEND_CMD:/1TR');
+        })
+        .then(() => {
+          console.log('📤 Sent pump terminate command: /1TR');
+          
+          // Also turn off relay for safety
+          return sendBLEMessage('RELAY:OFF');
+        })
+        .then(() => {
+          console.log('📤 Sent: RELAY:OFF');
+          document.getElementById('connectionStatus').textContent = '🛑 Emergency stop complete - schedule halted, relay OFF';
+        })
+        .catch(err => {
+          console.error('❌ Emergency stop failed:', err);
+          alert('❌ Emergency stop command failed. Try turning off relay manually.');
         });
     }
 
@@ -1161,6 +1253,52 @@
       }
     }
 
+    function readSequenceConfig() {
+      if (!rxCharacteristic) {
+        alert('⚠️ BLE not connected yet.');
+        return;
+      }
+      sendBLEMessage('READ_SEQUENCE')
+        .then(() => {
+          console.log('📤 Sent: READ_SEQUENCE');
+          document.getElementById('connectionStatus').textContent = '📄 Reading sequence config...';
+        })
+        .catch(err => {
+          console.error('❌ BLE write failed:', err);
+          alert('Failed to read sequence config');
+        });
+    }
+
+    function updateSequenceConfig() {
+      if (!rxCharacteristic) {
+        alert('⚠️ BLE not connected yet.');
+        return;
+      }
+      
+      const rinses = document.getElementById('rinseCount').value;
+      const pumps = document.getElementById('pumpCycles').value;
+      
+      if (!rinses || !pumps) {
+        alert('Please enter valid values for rinses and pump cycles');
+        return;
+      }
+      
+      sendBLEMessage(`UPDATE_SEQUENCE:${rinses},${pumps}`)
+        .then(() => {
+          console.log(`📤 Sent: UPDATE_SEQUENCE:${rinses},${pumps}`);
+          document.getElementById('connectionStatus').textContent = '✅ Sequence config updated';
+          document.getElementById('sequenceConfigPanel').style.display = 'none';
+        })
+        .catch(err => {
+          console.error('❌ BLE write failed:', err);
+          alert('Failed to update sequence config');
+        });
+    }
+
+    function cancelSequenceEdit() {
+      document.getElementById('sequenceConfigPanel').style.display = 'none';
+    }
+
     function fetchNextTrigger() {
       const message = "NEXTTRIGGER";
       if (rxCharacteristic) {
@@ -1198,7 +1336,10 @@
         line.includes('Start Time') || 
         line.includes('Current Time') || 
         line.includes('Scheduled End Time') ||
-        line.includes('Scheduled Runtime')
+        line.includes('Scheduled Runtime') ||
+        line.includes('⏰ Current:') ||
+        line.includes('⏭️ Next') ||
+        line.includes('📊 Remaining:')
       );
       
       if (isStatusMessage) {
@@ -1220,6 +1361,28 @@
             const runtimeMatch = line.match(/Scheduled Runtime: (.*)/);
             if (runtimeMatch) {
               lastStatus.runtime = runtimeMatch[1];
+              lastStatus.lastUpdated = Date.now();
+            }
+          }
+          // Check for compact status updates (⏰ Current: and ⏭️ Next)
+          else if (line.includes('⏰ Current:')) {
+            const timeMatch = line.match(/⏰ Current:\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/);
+            if (timeMatch) {
+              lastStatus.currentTime = timeMatch[1];
+              lastStatus.lastUpdated = Date.now();
+            }
+          }
+          else if (line.includes('⏭️ Next')) {
+            const timeMatch = line.match(/⏭️ Next.*?(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/);
+            if (timeMatch) {
+              lastStatus.endTime = timeMatch[1];
+              lastStatus.lastUpdated = Date.now();
+            }
+          }
+          else if (line.includes('📊 Remaining:')) {
+            const remainingMatch = line.match(/📊 Remaining:\s*(\d+\/\d+\s+samples?)/);
+            if (remainingMatch) {
+              lastStatus.remaining = remainingMatch[1];
               lastStatus.lastUpdated = Date.now();
             }
           }
@@ -1270,6 +1433,23 @@
           } else if (text.startsWith('ACK:ENTRY_BUILT')) {
             const m = text.match(/ACK:ENTRY_BUILT\s+(\d+)/);
             if (m) ackState.lastEntryBuilt = parseInt(m[1], 10);
+          }
+          
+          // Parse sequence configuration response
+          if (text.startsWith('SEQUENCE_CONFIG:')) {
+            const match = text.match(/SEQUENCE_CONFIG:\s*RINSE\s+(\d+).*PUMP_CYCLES\s+(\d+)/);
+            if (match) {
+              const rinses = match[1];
+              const pumps = match[2];
+              document.getElementById('rinseCount').value = rinses;
+              document.getElementById('pumpCycles').value = pumps;
+              document.getElementById('sequenceConfigPanel').style.display = 'block';
+              
+              const line = document.createElement('div');
+              line.textContent = `⚙️ Sequence Config: ${rinses} rinses, ${pumps} pump cycles`;
+              display.insertBefore(line, display.firstChild);
+            }
+            return;
           }
 
           if (text.startsWith('[FILE]')) {
