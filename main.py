@@ -32,10 +32,11 @@ last_ok_time = 0
 # === Relay Setup ===
 relay = Pin(13, Pin.OUT) # off
 
-# === RS485 Setup ===
-# Setup UART and RS485 direction control pin
-uart = UART(0, baudrate=9600, tx=Pin(0), rx=Pin(1))
-rs485_dir = Pin(2, Pin.OUT)  # DE/RE pin
+# === RS232 Setup ===
+# Setup UART and RS232 direction control pin
+uart0 = UART(0, baudrate=9600, tx=Pin(0), rx=Pin(1))
+uart1 = UART(1, baudrate=9600, tx=Pin(4), rx=Pin(5))
+
 
 # === LED Setup ===
 # Turn on built-in LED to indicate device is running
@@ -56,19 +57,14 @@ def _wifi_server_thread():
     finally:
         wifi_thread_running = False
 
-def send_rs485_command(command):
-    print("Command Sent:", command)
-
-    # Transmit mode
-    rs485_dir.value(1)
-    time.sleep(0.01)  # Allow line to settle
+def send_rs232_command(command, uart):
+    """Send RS232 command and read response - no direction control needed"""
+    print(f"Command Sent on UART: {command}")
+    
+    # RS232 is full-duplex, so just write directly
     uart.write(command + '\r')
-    # time.sleep(0.01)  # Allow transmission to complete
-
-    # Receive mode
-    rs485_dir.value(0)
-    time.sleep(0.05)  # Wait for response
-
+    time.sleep(0.05)  # Brief delay for device to process
+    
     # Read response
     start_time = time.ticks_ms()
     response = b""
@@ -77,18 +73,21 @@ def send_rs485_command(command):
             response += uart.read()
             if b'\n' in response:
                 break
-
+    
     print("Raw Hex Response:", [hex(b) for b in response])
     try:
         print("Parsed Response:", response.decode('utf-8'))
     except UnicodeError:
         print("Received non-UTF8 data")
+    
+    return response
 
 # --- File Transfer State ---
 receiving_file = False
 file_lines = []
 schedule = []
 startNow = False  # Manual start flag
+emergency_stop = False  # Emergency stop flag
 ble_lock = allocate_lock()  # Lock for BLE operations
 
 # --- File Operations ---
@@ -314,6 +313,13 @@ def on_ble_rx(data):
                 startNow = True
                 sp.send("✅ Manual start triggered!")
                 return
+            
+            elif msg.strip().upper() == 'EMERGENCY_STOP':
+                global emergency_stop
+                emergency_stop = True
+                sp.send('🛑 Emergency stop activated - schedule halted')
+                print('🛑 Emergency stop flag set')
+                return
 
             elif msg.strip().upper() == 'RESET':
                 # Reboot the Pico on request via BLE
@@ -531,43 +537,61 @@ def on_ble_rx(data):
             
             elif msg == "READ_SEQUENCE":
                 time.sleep(0.1)  # Small delay before sending response
-                # Load raw sequence for display
-                sequence_lines = []
+                # Parse sequence file to extract rinse and pump cycle counts
+                rinse_count = 0
+                pump_cycles = 0
                 try:
                     with open("default_sequence.txt", "r") as f:
                         for line in f:
                             line = line.strip()
-                            if not line or line.startswith('#'):
-                                continue
-                            sequence_lines.append(line)
+                            if line.startswith('RINSE '):
+                                try:
+                                    rinse_count = int(line.split()[1])
+                                except:
+                                    pass
+                            elif line.startswith('PUMP_CYCLES ') or line.startswith('PUMP '):
+                                try:
+                                    pump_cycles = int(line.split()[1])
+                                except:
+                                    pass
                 except OSError:
-                    pass
-                if sequence_lines:
-                    sp.send("Processed lines ({:d} total):".format(len(sequence_lines)))
-                    descriptions = {
-                        "/2wR": "start positions",
-                        "WAIT 1": "",
-                        "/1ZWR": "",
-                        "WAIT 10": "",
-                        "/2O01R": "rinse sequence",
-                        "WAIT 4": "",
-                        "RINSE 2": "",
-                        "{COMMAND}": "replaced with COMMAND during loading",
-                        "WAIT 4": "",
-                        "PUMP_CYCLES 15": "pump cycles",
-                        "/2wR": "reset valves",
-                        "WAIT 4": ""
-                    }
-                    for i, line in enumerate(reversed(sequence_lines), 1):
-                        step = len(sequence_lines) - i + 1
-                        desc = descriptions.get(line, "")
-                        if desc:
-                            sp.send(f"{step}. {line} ({desc})")
-                        else:
-                            sp.send(f"{step}. {line}")
-                        time.sleep(0.05)  # Small delay between lines
-                else:
-                    sp.send("📭 No sequence loaded (using default)")
+                    sp.send("❌ Error reading sequence file")
+                    return
+                
+                # Send config in format the webpage expects
+                sp.send(f"SEQUENCE_CONFIG: RINSE {rinse_count}, PUMP_CYCLES {pump_cycles}")
+                return
+            
+            elif msg.startswith("UPDATE_SEQUENCE:"):
+                # Format: UPDATE_SEQUENCE:rinses,pumps (e.g., UPDATE_SEQUENCE:2,12)
+                try:
+                    params = msg[16:].strip()  # Remove "UPDATE_SEQUENCE:"
+                    rinses, pumps = params.split(',')
+                    rinse_count = int(rinses)
+                    pump_cycles = int(pumps)
+                    
+                    # Read existing file
+                    lines = []
+                    try:
+                        with open("default_sequence.txt", "r") as f:
+                            lines = f.readlines()
+                    except OSError:
+                        pass
+                    
+                    # Update the file
+                    with open("default_sequence.txt", "w") as f:
+                        for line in lines:
+                            stripped = line.strip()
+                            if stripped.startswith('RINSE '):
+                                f.write(f"RINSE {rinse_count}\n")
+                            elif stripped.startswith('PUMP_CYCLES ') or stripped.startswith('PUMP '):
+                                f.write(f"PUMP_CYCLES {pump_cycles}\n")
+                            else:
+                                f.write(line)
+                    
+                    sp.send(f"✅ Sequence updated: {rinse_count} rinses, {pump_cycles} pump cycles")
+                except Exception as e:
+                    sp.send(f"❌ Error updating sequence: {e}")
                 return
             
             elif msg.startswith("wifi_on"):
@@ -667,7 +691,9 @@ def on_ble_rx(data):
                         # Sort by part number and assemble
                         custom_cmd_parts.sort(key=lambda x: x[0])
                         full_cmd = "".join([part[1] for part in custom_cmd_parts])
-                        send_rs485_command(full_cmd)
+                        # Determine which UART based on command (pump=uart0, valve=uart1)
+                        target_uart = uart0 if full_cmd.startswith('/1') else uart1
+                        send_rs232_command(full_cmd, target_uart)
                         sp.send(f"✅ Sent assembled command: {full_cmd}")
                         # Reset
                         custom_cmd_parts = []
@@ -683,19 +709,13 @@ def on_ble_rx(data):
             elif msg.startswith("SEND_CMD:"):
                 cmd = msg[9:].strip()
                 if cmd:
-                    send_rs485_command(cmd)
+                    # Determine which UART based on command (pump=uart0, valve=uart1)
+                    target_uart = uart0 if cmd.startswith('/1') else uart1
+                    send_rs232_command(cmd, target_uart)
                     sp.send(f"✅ Sent command: {cmd}")
                 else:
                     sp.send("❌ Empty command")
                 return
-            # elif msg.startswith("SEND_CMD:"):
-            #     cmd = msg[9:].strip()
-            #     if cmd:
-            #         send_rs485_command(cmd)
-            #         sp.send(f"✅ Sent command: {cmd}")
-            #     else:
-            #         sp.send("❌ Empty command")
-            #     return
 
     except Exception as e:
         print("BLE RX Error:", e)
@@ -1225,15 +1245,15 @@ def print_timing_info(step, remaining_ms, next_switch, now):
     sp.send(f"📍 Next Switch At: {formatted_next}")
 
 
-# RS485 functions
-def read_and_validate_response(rs485):
+# RS232 functionsdef send_rs232_command(command_str, uart):
+def read_and_validate_response(rs232, uart):
     print("Raw Hex Response: ", end='')
     response = bytearray()
     start_time = time.ticks_ms()
 
     while time.ticks_diff(time.ticks_ms(), start_time) < 2000:
-        if rs485.any():
-            byte_in = rs485.read(1)
+        if rs232.any():
+            byte_in = rs232.read(1)
             if byte_in:
                 print(f"{byte_in[0]:02X} ", end='')
                 response.append(byte_in[0])
@@ -1279,12 +1299,18 @@ def wait_with_heartbeat(duration_ms, next_index):
             current_now = parse_time_str(manager.get_formatted_time())
             next_switch = ensure_tuple(schedule[next_index]["startTime"])
             remaining = get_safe_remaining_millis(current_now, next_switch)
+            
+            # Calculate remaining entries
+            remaining_entries = len(schedule) - next_index
+            
             sp.send("⏰ Current: " + format_time(current_now))
             sp.send("⏭️ Next at: " + format_time(next_switch))
+            sp.send(f"📊 Remaining: {remaining_entries}/{len(schedule)} samples")
             
 
             print(f"⏰ Current: {format_time(current_now)}")
             print(f"⏭️ Next: {format_time(next_switch)}")
+            print(f"📊 Remaining: {remaining_entries}/{len(schedule)} samples")
 
 def load_sequence(filename="default_sequence.txt"):
     """Load the execution sequence from file, return list of commands/actions"""
@@ -1308,8 +1334,177 @@ def load_sequence(filename="default_sequence.txt"):
         sp.send(f"❌ Failed to load sequence from {filename}")
         return []
 
+def test_log(msg):
+    """Log messages to testing log file"""
+    try:
+        t = time.localtime()
+        ts = "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(t[0], t[1], t[2], t[3], t[4], t[5])
+    except Exception:
+        ts = str(time.ticks_ms())
+    try:
+        with open("pump_status_log.txt", "a") as f:
+            f.write(ts + " | " + str(msg) + "\n")
+    except Exception as e:
+        print("test_log failed:", e)
+
+def query_pump_status():
+    """Query pump status using [Q] command and decode status byte"""
+    uart0.write("/1QR\r")
+    time.sleep(0.1)
+    
+    response = bytearray()
+    start_time = time.ticks_ms()
+    while time.ticks_diff(time.ticks_ms(), start_time) < 1000:
+        if uart0.any():
+            byte_in = uart0.read(1)
+            if byte_in:
+                response.append(byte_in[0])
+                if byte_in[0] == 0x0A or len(response) >= 64:
+                    break
+    
+    if len(response) >= 4:
+        # Status byte is typically the 4th byte (after /1@)
+        status_byte = response[3]
+        
+        # Bit 5: Pump status (1=ready, 0=busy)
+        is_ready = (status_byte & 0x20) != 0
+        
+        # Bits 0-3: Error code
+        error_code = status_byte & 0x0F
+        
+        # Error descriptions
+        errors = {
+            0: "Error Free",
+            1: "Initialization error - check blockages",
+            2: "Invalid Command",
+            3: "Invalid Operand",
+            6: "EEPROM Failure",
+            7: "Device Not Initialized",
+            8: "Internal failure",
+            9: "Piston Overload - reinitialize required",
+            11: "Piston movement not allowed",
+            12: "Internal fault",
+            14: "A/D converter failure"
+        }
+        
+        status = "READY" if is_ready else "BUSY"
+        error_desc = errors.get(error_code, f"Unknown error {error_code}")
+        
+        print(f"Status: {status} | Error Code: {error_code} ({error_desc})")
+        print(f"Raw status byte: 0x{status_byte:02X}")
+        
+        return {
+            'ready': is_ready,
+            'error_code': error_code,
+            'error_desc': error_desc,
+            'status_byte': status_byte,
+            'raw_response': response
+        }
+    else:
+        print("⚠️ No valid status response received")
+        return None
+
+def wait_for_pump_ready(timeout_sec=40, poll_interval=5):
+    """Poll pump status until ready or timeout"""
+    global emergency_stop
+    print(f"Waiting for pump to become ready (timeout: {timeout_sec}s, polling every {poll_interval}s)")
+    sp.send(f"⏳ Monitoring pump status...")
+    start_time = time.ticks_ms()
+    
+    while time.ticks_diff(time.ticks_ms(), start_time) < (timeout_sec * 1000):
+        # Check for emergency stop
+        if emergency_stop:
+            print("🛑 Pump monitoring aborted - emergency stop active")
+            sp.send("🛑 Pump aborted - emergency stop")
+            return False
+        
+        status = query_pump_status()
+        
+        if status:
+            # Log status check
+            test_log(f"Status check: {'READY' if status['ready'] else 'BUSY'} | Error: {status['error_code']}")
+            
+            # Send periodic time update while waiting
+            current_time_str = manager.get_formatted_time()
+            sp.send(f"Current Time")
+            sp.send(format_time(ensure_tuple(current_time_str)))
+            
+            # Check for errors
+            if status['error_code'] != 0:
+                error_msg = f"⚠️ Pump error: {status['error_desc']}"
+                print(error_msg)
+                sp.send(error_msg)
+                return False
+            
+            # Check if ready
+            if status['ready']:
+                print("✅ Pump is ready")
+                sp.send("✅ Pump ready")
+                return True
+            else:
+                print(f"⏳ Pump still busy... waiting {poll_interval}s")
+        else:
+            print("⚠️ Failed to get pump status")
+        
+        time.sleep(poll_interval)
+    
+    timeout_msg = f"⏰ Timeout waiting for pump"
+    print(timeout_msg)
+    sp.send(timeout_msg)
+    return False
+
+
+def send_and_validate(cmd, cycle=None):
+    # Transmit
+    uart0.write(cmd + '\r')
+    time.sleep(0.05)
+    # Switch to receive and allow device to respond
+    time.sleep(0.1)
+    # Read and validate the response
+    response, matched = read_and_validate_response(uart0)
+
+    # Prepare a human readable raw hex representation
+    if response:
+        raw_hex = ",".join([hex(b) for b in response])
+    else:
+        raw_hex = "[]"
+
+    # Determine status
+    if not response or len(response) == 0:
+        status = "LOST COMMS"
+        print("LOST COMMS")
+    else:
+        status = "OK" if matched else "MISMATCH"
+
+    # Log the cycle result
+    cycle_str = f"Cycle {cycle}" if cycle is not None else ""
+    log_msg = f"{cycle_str} | Command: {cmd} | Raw: {raw_hex} | Status: {status}"
+    test_log(log_msg)
+    print("Logged:", log_msg)
+    return response, matched
+
 def execute_step(command):
-    global relay_manual_control
+    global relay_manual_control, emergency_stop
+    
+    # Check for emergency stop
+    if emergency_stop:
+        print("🛑 Execute step aborted - emergency stop active")
+        sp.send("🛑 Step aborted - emergency stop active")
+        return
+    
+    # Send current status update at start of step
+    current_time_str = manager.get_formatted_time()
+    sp.send("Current Time")
+    sp.send(format_time(ensure_tuple(current_time_str)))
+    sp.send(f"🚀 Executing: {command}")
+    
+    # Clear pump status log at start of new sequence
+    try:
+        with open("pump_status_log.txt", "w") as f:
+            f.write("")
+        print("🧹 Pump status log cleared for new sequence")
+    except Exception as e:
+        print(f"Failed to clear pump status log: {e}")
     
     sp.send("🔀⚡Relay on")
     print("Testing Relay ON")
@@ -1318,13 +1513,22 @@ def execute_step(command):
     time.sleep(2)
 
     print("Valves and pump set to start positions")
-    send_rs485_command("/2wR")
+    send_rs232_command("/2wR", uart1)
     time.sleep(1)
-    send_rs485_command("/1ZWR") # pump test
-    time.sleep(10)
+    
+    # Initialize pump and wait for ready
+    print("Initializing pump...")
+    sp.send("🔧 Initializing pump")
+    send_rs232_command("/1ZWR", uart0) # pump initialization
+    if not wait_for_pump_ready(timeout_sec=15, poll_interval=2):
+        print("⚠️ Pump initialization failed or timed out")
+        sp.send("⚠️ Pump init failed")
+        relay.value(1)  # Turn off relay
+        return
+    
     # probably need a rinse section in here with "/201R and 2 cycles of the pump
-    print( "Rinsing system")
-    send_rs485_command("/2O01R")
+    print("Rinsing system")
+    send_rs232_command("/2O01R", uart1)
     time.sleep(4)
 
     sequence = load_sequence("default_sequence.txt")
@@ -1342,12 +1546,18 @@ def execute_step(command):
             for i in range(n):
                 print(f"💉 Rinse {i+1}/{n}")
                 sp.send(f"💉 Rinse {i+1}/{n}")
-                send_rs485_command("/1J0S15A0A7640M2000J1M2000S14A0M2000J0R")
-                time.sleep(30)
+                send_rs232_command("/1J0S15A0A7640M2000J1M2000S14A0M2000J0R", uart0)
+                
+                # Wait for pump to complete rinse cycle
+                if not wait_for_pump_ready(timeout_sec=40, poll_interval=5):
+                    print(f"⚠️ Rinse cycle {i+1} failed")
+                    sp.send(f"⚠️ Rinse {i+1} failed")
+                    relay.value(1)  # Turn off relay
+                    return
         elif item == 'COMMAND':
             print(f"🚀 Executing command: {command}")
             log_command(command, manager.get_formatted_time(), "Start")
-            send_rs485_command(command)
+            send_rs232_command(command, uart1)
             sp.send("🚀 Executing command: " + command)
             sp.send("🛠️Valves set")
             time.sleep(4)
@@ -1361,18 +1571,43 @@ def execute_step(command):
                 sp.send(warning_msg)
             print(f"💉 Starting pump sequence ({n} repetitions)")
             sp.send(f"💉 Starting pump sequence ({n}x)")
+            
             for i in range(n):
                 print(f"💉 Pumping cycle {i+1}/{n}")
                 sp.send(f"💉 Cycle {i+1}/{n}")
-                send_rs485_command("/1J0S15A0A7640M2000J1M2000S14A0M2000J0R")
-                time.sleep(30)
+                
+                # Check pump status before sending command
+                status = query_pump_status()
+                if status and status['error_code'] != 0:
+                    error_msg = f"⚠️ Pump error before cycle {i+1}: {status['error_desc']}"
+                    print(error_msg)
+                    sp.send(error_msg)
+                    test_log(f"Cycle {i+1} aborted - pump error: {status['error_desc']}")
+                    relay.value(1)  # Turn off relay
+                    return
+                
+                # Send pump command
+                send_rs232_command("/1J0S15A0A7640M2000J1M2000S14A0M2000J0R", uart0)
+                
+                # Wait for pump to complete cycle with status monitoring
+                if not wait_for_pump_ready(timeout_sec=45, poll_interval=5):
+                    error_msg = f"⚠️ Cycle {i+1} failed or timed out"
+                    print(error_msg)
+                    sp.send(error_msg)
+                    test_log(f"Cycle {i+1} - pump timeout or error")
+                    relay.value(1)  # Turn off relay
+                    return
+                
+                print(f"✅ Cycle {i+1} completed successfully")
+                test_log(f"Cycle {i+1} completed OK")
+            
             print("✅ Completed all pump cycles")
             sp.send("✅ Pumping completed")
             log_command(command, manager.get_formatted_time(), "End")
 
     print("♻️ Resetting valves post-operation")
     sp.send("♻️Reset valves")
-    send_rs485_command("/2wR")
+    send_rs232_command("/2wR", uart1)
     time.sleep(4) 
 
     print("Relay OFF")
@@ -1384,7 +1619,14 @@ def execute_step(command):
 schedule = load_schedule("schedule.txt")
 
 def main_loop():
+    global emergency_stop
     for i, entry in enumerate(schedule):
+        # Check for emergency stop before each step
+        if emergency_stop:
+            print("🛑 Main loop stopped - emergency stop active")
+            sp.send("🛑 Schedule stopped - emergency stop")
+            break
+        
         print("--------------------------------------------------")
         now_tuple = parse_time_str(manager.get_formatted_time())
         step_start = time.ticks_ms()
@@ -1410,8 +1652,11 @@ def main_loop():
     sp.send("All steps completed!")
     
 def scheduler():
-    global startNow  # Declare startNow as global
+    global startNow, emergency_stop  # Declare as global
     while True:
+        # Reset emergency stop flag at start of new schedule cycle
+        emergency_stop = False
+        
         wait_for_start()  # Wait for manual BLE trigger or scheduled start
         main_loop()       # Execute scheduled steps
         
