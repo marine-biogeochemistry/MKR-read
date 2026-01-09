@@ -51,6 +51,18 @@
     }
     .tab-content.active { display: block; }
 
+    /* Status box (separate from the main readout) */
+    #statusBox {
+      border: 1px solid #007bff;
+      background: #f0f8ff;
+      padding: 10px;
+      margin-top: 12px;
+      font-family: monospace;
+      color: #003366;
+      border-radius: 6px;
+      min-height: 60px;
+      max-width: 100%;
+    }
   </style>
 </head>
   <script>
@@ -125,7 +137,7 @@
 
 
 
-  <h1>PICO W BLE Panel</h1>
+  <h1>Autosampler BLE Panel</h1>
 
   <div class="tab-container">
     <div class="tab-buttons">
@@ -333,6 +345,8 @@
     </div>
   </div>
 
+  <div id="statusBox" aria-live="polite">⏰ Current Time: --<br>📅 Next Schedule: --<br>Last updated: --</div>
+
   <div id="bluetoothData" style="margin-top: 20px; padding: 10px; border: 1px solid #ccc; background-color: #f9f9f9; max-height: 400px; overflow-y: auto; font-family: monospace; white-space: pre-wrap;"></div>
 
   <script>
@@ -368,37 +382,31 @@
 
     // Function to update the status display with the latest values
     function updateStatusDisplay() {
-      // Skip if we don't have any status data yet
-      if (lastStatus.lastUpdated === 0) return;
-      
-      // If status is too old (older than 5 minutes), mark it as stale
+      const statusBox = document.getElementById('statusBox');
+      if (!statusBox) return;
+
+      // Show placeholders if no status received yet
+      if (lastStatus.lastUpdated === 0) {
+        statusBox.innerHTML = '⏰ Current Time: --<br>📅 Next Schedule: --<br>Last updated: --';
+        return;
+      }
+
       const isStale = (Date.now() - lastStatus.lastUpdated) > 5 * 60 * 1000;
-      const display = document.getElementById('bluetoothData');
-      
-      // Remove any existing status messages
-      const existingStatus = Array.from(display.querySelectorAll('.status-message'));
-      existingStatus.forEach(el => el.remove());
-      
-      // Create status lines from the last known values
-      const statusLines = [
-        `Start Time: ${lastStatus.startTime}`,
-        `Current Time: ${lastStatus.currentTime}`,
-        `🛑 Scheduled End Time: ${lastStatus.endTime}`,
-        `🕒 Scheduled Runtime: ${lastStatus.runtime}`,
-        `📊 Remaining: ${lastStatus.remaining}`,
-      ];
-      
-      // Add the status messages at the top
-      statusLines.reverse().forEach(text => {
-        if (text && !text.includes('N/A') && (!isStale || text.includes('Battery'))) {
-          const line = document.createElement('div');
-          line.className = 'status-message';
-          line.style.marginBottom = '5px';
-          line.style.fontFamily = 'monospace';
-          line.textContent = text
-          display.insertBefore(line, display.firstChild);
-        }
-      });
+      const current = (lastStatus.currentTime && lastStatus.currentTime !== 'N/A') ? lastStatus.currentTime : '--';
+      const next = (lastStatus.startTime && lastStatus.startTime !== 'N/A') ? lastStatus.startTime : '--';
+      const lastUpdatedStr = new Date(lastStatus.lastUpdated).toLocaleString();
+
+      let html = `<div><strong>⏰ Current Time:</strong> ${current}<br><strong>📅 Next Schedule:</strong> ${next}<br><strong>Last updated:</strong> ${lastUpdatedStr}</div>`;
+
+      if (!isStale) {
+        if (lastStatus.endTime && lastStatus.endTime !== 'N/A') html += `<div>🛑 Scheduled End Time: ${lastStatus.endTime}</div>`;
+        if (lastStatus.runtime && lastStatus.runtime !== 'N/A') html += `<div>🕒 Scheduled Runtime: ${lastStatus.runtime}</div>`;
+        if (lastStatus.remaining && lastStatus.remaining !== 'N/A') html += `<div>📊 Remaining: ${lastStatus.remaining}</div>`;
+      } else {
+        html += `<div style="color:#a00; margin-top:6px;">Status stale</div>`;
+      }
+
+      statusBox.innerHTML = html;
     }
     
     // Periodically refresh the status display
